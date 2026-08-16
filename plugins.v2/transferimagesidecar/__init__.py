@@ -175,13 +175,13 @@ def _is_media_file(path: Path) -> bool:
 class TransferImageSidecar(_PluginBase):  # noqa: D101
     # --- 插件元数据（前端/市场使用） ---
     # 在前端展示的插件名称
-    plugin_name = "转移图片挂载文件"
+    plugin_name = "媒体刮削文件转移"
     # 插件描述（可改为中文以便在市场中显示更友好）
-    plugin_desc = "将媒体文件同目录下匹配的 fanart/poster 图片和 NFO 文件一并转移，适用于本地文件系统"
+    plugin_desc = "转移媒体文件目录下的fanart/poster和nfo,适用与已刮削完成的媒体文件"
     # 插件图标文件名（放在静态资源目录）
     plugin_icon = "movie.jpg"
     # 插件版本（应与 package.v2.json 保持一致）
-    plugin_version = "0.1.0"
+    plugin_version = "0.1.1"
     # 作者信息
     plugin_author = "cswhrdf"
     # 配置项前缀，用于配置存储中区分本插件项
@@ -191,7 +191,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
 
     # 运行时启用开关，init_plugin 会根据配置覆盖
     _enabled: bool = True
-    _delay_seconds: int = 20
+    _delay_seconds: int = 30
     _enable_first_episode_promotion: bool = True
     _media_poster_season: int = 1
     _media_poster_episode: int = 1
@@ -222,6 +222,32 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
 
         """
         return self._enabled
+
+    def _notify_transfer_failure(self, context: str, exc: Exception, level: str = "warn") -> None:
+        """统一记录转移失败日志并向 MoviePilot 发送系统通知.
+
+        Args:
+            context: 失败上下文描述
+            exc: 具体异常对象
+            level: 日志级别，可为 "warn" 或 "error"；用于统一控制本地日志输出。
+
+        """
+        message = f"转移图片挂载文件处理失败：{context}\n错误：{exc}"
+        log_level = (level or "warn").lower()
+        if log_level == "error":
+            logger.error(message)
+        else:
+            logger.warn(message)
+
+        try:
+            self.post_message(channel="system", title="转移图片挂载文件异常", text=message)
+            return
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            self.post_message(title="转移图片挂载文件异常", text=message)
+        except Exception:  # noqa: BLE001
+            logger.error(f"系统通知发送失败: {message}")
 
     # --- 转移处理：配对与流程 ---
     def _resolve_transfer_pairs(self, transferinfo: TransferInfo) -> list[tuple[str | None, str | None]]:
@@ -280,7 +306,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
                     f"按 {transfer_type} 方式转移媒体级 {kind}（第 {target_episode} 集）：{asset_path} -> {media_dest}"
                 )
             except Exception as e:  # noqa: BLE001
-                logger.warn(f"转移媒体级 {kind} 失败 {asset_path} -> {media_dest}: {e}")
+                self._notify_transfer_failure(f"转移媒体级 {kind} 失败 {asset_path} -> {media_dest}", e, level="warn")
 
     def _transfer_sidecars_and_nfo(
         self,
@@ -321,7 +347,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
                 _transfer_with_method(img, dest, transfer_type)
                 logger.info(f"按 {transfer_type} 方式转移 poster: {img} -> {dest}")
             except Exception as e:  # noqa: BLE001
-                logger.warn(f"转移 poster 失败 {img} -> {dest}: {e}")
+                self._notify_transfer_failure(f"转移 poster 失败 {img} -> {dest}", e, level="warn")
 
         nfo = _find_asset_for_stem(source_dir, stem, "nfo")
         if not nfo:
@@ -333,7 +359,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
             _transfer_with_method(nfo, dest_nfo, "copy")
             logger.info(f"按 copy 方式转移 NFO: {nfo} -> {dest_nfo}")
         except Exception as e:  # noqa: BLE001
-            logger.warn(f"转移 NFO 失败 {nfo} -> {dest_nfo}: {e}")
+            self._notify_transfer_failure(f"转移 NFO 失败 {nfo} -> {dest_nfo}", e, level="warn")
 
     def _collect_season_posters_and_fanart(
         self,
@@ -369,18 +395,14 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
                     break
             if ep_poster:
                 break
+        logger.debug(f"解析季/集信息: 第 {season} 季第 {episode} 集 -> {ep_poster}")
 
         if ep_poster:
             target_episode = self._season_poster_episode
-            if target_episode <= 0:
-                target_episode = 1
 
             if episode == target_episode:
                 season_posters[season] = (episode, ep_poster, new_path.parent)
-            elif season not in season_posters:
-                prev = season_posters.get(season)
-                if prev is None or episode < prev[0]:
-                    season_posters[season] = (episode, ep_poster, new_path.parent)
+                logger.debug(f"收集季海报素材: 第 {season} 季第 {episode} 集 -> {ep_poster}")
 
         return season_posters
 
@@ -411,7 +433,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
                 _transfer_with_method(poster_path, season_dest, transfer_type)
                 logger.info(f"按 {transfer_type} 方式转移季海报: {poster_path} -> {season_dest}")
             except Exception as e:  # noqa: BLE001
-                logger.warn(f"设置第 {season} 季海报失败: {e}")
+                self._notify_transfer_failure(f"设置第 {season} 季海报失败", e, level="warn")
 
     def _process_transfer_event(self, transferinfo: TransferInfo) -> None:
         """延迟处理转移完成事件，并在等待窗口结束后执行 sidecar 与季 poster 整理.
@@ -432,6 +454,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
 
                     src_path = Path(oldp)
                     new_path = Path(newp)
+                    logger.debug(f"处理转移文件对: {src_path.name} -> {new_path.name}")
                     dir_key = (str(src_path.parent), str(new_path.parent))
                     if dir_key in processed_dirs:
                         continue
@@ -445,14 +468,14 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
                         season_posters,
                     )
                 except Exception as inner_e:  # noqa: BLE001
-                    logger.warn(f"处理文件对 {oldp} -> {newp} 时出错: {inner_e}")
+                    self._notify_transfer_failure(f"处理文件对 {oldp} -> {newp} 时出错", inner_e, level="warn")
 
             if self._generate_season_posters:
                 self._apply_generated_assets(season_posters, transfer_type)
             else:
                 logger.debug("已关闭季海报生成，未执行 _apply_generated_assets")
         except Exception as e:  # noqa: BLE001
-            logger.error(f"transfer_image_sidecar 执行失败: {e}")
+            self._notify_transfer_failure("transfer_image_sidecar 执行失败", e, level="error")
 
     @eventmanager.register(EventType.TransferComplete)
     def on_transfer_complete(self, event: Event):
@@ -517,7 +540,8 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
                                             "label": "延迟执行秒数",
                                             "type": "number",
                                             "suffix": "秒",
-                                            "hint": "等待媒体整理与待刮削项完成的延迟时间",
+                                            "hint": "在媒体整理完成后等待待刮削项完成的延迟时间(\
+                                                由于不确定待刮削项的数量和处理时间，建议设置为 30 秒以上)",
                                         },
                                     }
                                 ],
@@ -551,7 +575,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
                                             "model": "media_poster_season",
                                             "label": "媒体海报季",
                                             "type": "number",
-                                            "hint": "例如 1 表示第 1 季",
+                                            "hint": "例如 1 表示使用第 1 季指定集的封面",
                                         },
                                     }
                                 ],
@@ -566,7 +590,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
                                             "model": "media_poster_episode",
                                             "label": "媒体海报集",
                                             "type": "number",
-                                            "hint": "例如 1 表示第 1 集",
+                                            "hint": "例如 1 表示使用指定季的第 1 集封面",
                                         },
                                     }
                                 ],
@@ -600,7 +624,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
                                             "model": "season_poster_episode",
                                             "label": "季海报集",
                                             "type": "number",
-                                            "hint": "例如 1 表示当前季第 1 集",
+                                            "hint": "例如 1 表示使用当前季第 1 集的封面",
                                         },
                                     }
                                 ],
