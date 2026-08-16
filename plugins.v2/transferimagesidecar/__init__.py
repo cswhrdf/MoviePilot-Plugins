@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from threading import Timer
 from typing import Literal, cast, overload
@@ -19,13 +20,13 @@ SEPARATORS = ["-", "_", " ", "."]
 def _remove_conflicting_image_targets(src: Path, dest: Path) -> None:
     """删除目标目录中与待写入图片同 stem 的其他图片文件.
 
-    仅针对图片类型处理，避免误删 NFO 或其他非图片文件.
-    若同一个 stem 通过 .jpg / .png / .webp / .jpeg 等不同后缀同时存在，
-    则在写入前统一清理，保证最终目标位置只有一份图片.
+    仅针对图片类型处理, 避免误删 NFO 或其他非图片文件.
+    若同一个 stem 通过 .jpg / .png / .webp / .jpeg 等不同后缀同时存在,
+    则在写入前统一清理, 保证最终目标位置只有一份图片.
 
     Args:
-        src: 源文件路径，表示要被搬运的文件
-        dest: 目标文件路径，表示搬运后的落点
+        src: 源文件路径, 表示要被搬运的文件
+        dest: 目标文件路径, 表示搬运后的落点
 
     """
     if src.suffix.lower() not in IMAGE_EXTS and dest.suffix.lower() not in IMAGE_EXTS:
@@ -37,24 +38,24 @@ def _remove_conflicting_image_targets(src: Path, dest: Path) -> None:
             continue
         if candidate.exists() or candidate.is_symlink():
             if candidate.is_dir() and not candidate.is_symlink():
-                raise IsADirectoryError(f"目标图片路径是目录，不能覆盖: {candidate}")
+                raise IsADirectoryError(f"目标图片路径是目录, 不能覆盖: {candidate}")
             candidate.unlink()
 
     if dest.exists() or dest.is_symlink():
         if dest.is_dir() and not dest.is_symlink():
-            raise IsADirectoryError(f"目标路径是目录，不能覆盖: {dest}")
+            raise IsADirectoryError(f"目标路径是目录, 不能覆盖: {dest}")
         dest.unlink()
 
 
 def _transfer_with_method(src: Path, dest: Path, transfer_type: str) -> None:
     """根据当前转移方式把文件复制到目标目录.
 
-    在实际写入前，会先检查目标位置是否已有同名图片文件；若存在则删除，避免覆盖冲突.
+    在实际写入前, 会先检查目标位置是否已有同名图片文件；若存在则删除, 避免覆盖冲突.
 
     Args:
-        src: 源文件路径，表示要被搬运的文件
-        dest: 目标文件路径，表示搬运后的落点
-        transfer_type: 传输策略，支持 copy、move、hardlink、symlink
+        src: 源文件路径, 表示要被搬运的文件
+        dest: 目标文件路径, 表示搬运后的落点
+        transfer_type: 传输策略, 支持 copy、move、hardlink、symlink
 
     """
     method = (transfer_type or "copy").lower()
@@ -79,20 +80,25 @@ def _transfer_with_method(src: Path, dest: Path, transfer_type: str) -> None:
 
 
 @overload
-def _find_asset_for_stem(dir_path: Path, stem: str, kind: Literal["poster", "fanart"]) -> list[Path] | None: ...
+def _find_asset_for_stem(
+    dir_path: Path, stem: str, kind: Literal["poster", "fanart"], asset_name: str | None = None
+) -> list[Path] | None: ...
 @overload
-def _find_asset_for_stem(dir_path: Path, stem: str, kind: Literal["nfo"]) -> Path | None: ...
+def _find_asset_for_stem(
+    dir_path: Path, stem: str, kind: Literal["nfo"], asset_name: str | None = None
+) -> Path | None: ...
 
 
 def _find_asset_for_stem(
-    dir_path: Path, stem: str, kind: Literal["poster", "fanart", "nfo"] = "poster"
+    dir_path: Path, stem: str, kind: Literal["poster", "fanart", "nfo"] = "poster", asset_name: str | None = None
 ) -> list[Path] | Path | None:
     """统一查找资产.
 
     Args:
-        dir_path: 要搜索的目录，通常是媒体文件所在目录
-        stem: 媒体文件名的主干，通常等于文件的 stem, 不含扩展名
-        kind: 要查找的资产类型，支持 poster、fanart 和 nfo
+        dir_path: 要搜索的目录, 通常是媒体文件所在目录
+        stem: 媒体文件名的主干, 通常等于文件的 stem, 不含扩展名
+        kind: 要查找的资产类型, 支持 poster、fanart 和 nfo
+        asset_name: 自定义资产名后缀, 例如 poster/fanart 的外部配置值
 
     Returns:
         poster/fanart: 返回匹配到的图片路径列表
@@ -100,11 +106,14 @@ def _find_asset_for_stem(
 
     """
     kind = cast(Literal["poster", "fanart", "nfo"], kind.lower())
+    normalized_asset_name = (asset_name or kind).strip()
+    if not normalized_asset_name:
+        normalized_asset_name = kind
     if kind in {"poster", "fanart"}:
         found: list[Path] = []
         for sep in SEPARATORS:
             for ext in IMAGE_EXTS:
-                candidate = dir_path / f"{stem}{sep}{kind}{ext}"
+                candidate = dir_path / f"{stem}{sep}{normalized_asset_name}{ext}"
                 if candidate.exists():
                     found.append(candidate)
         return found
@@ -126,7 +135,7 @@ def _parse_season_episode(name: str) -> tuple[int, int] | None:
         返回 (season, episode) 二元组；若未匹配到 SxxExx 格式则返回 None
 
     """
-    # 在文件名中查找 SxxExx 格式（例如 S01E03 或 s01e03），返回 (season, episode)
+    # 在文件名中查找 SxxExx 格式（例如 S01E03 或 s01e03）, 返回 (season, episode)
     m = re.search(r"[Ss](\d{1,2})[Ee](\d{1,2})", name)
     if m:
         try:
@@ -138,21 +147,28 @@ def _parse_season_episode(name: str) -> tuple[int, int] | None:
     return None
 
 
-def _build_renamed_sidecar_path(target_dir: Path, media_path: Path, sidecar_path: Path) -> Path:
+def _build_renamed_sidecar_path(
+    target_dir: Path,
+    media_path: Path,
+    sidecar_path: Path,
+    poster_asset_name: str = "poster",
+) -> Path:
     """按媒体文件的目标命名规则重命名剧集 poster 文件.
 
     Args:
-        target_dir: 目标目录，通常是媒体文件的父目录
-        media_path: 目标媒体文件路径，用于取其 stem 生成最终文件名
-        sidecar_path: 源 sidecar 文件路径，用于提取原始后缀和类型
+        target_dir: 目标目录, 通常是媒体文件的父目录
+        media_path: 目标媒体文件路径, 用于取其 stem 生成最终文件名
+        sidecar_path: 源 sidecar 文件路径, 用于提取原始后缀和类型
+        poster_asset_name: 用于识别 poster 侧载图的名称后缀, 默认为 poster
 
     Returns:
         最终应写入的目标文件路径
 
     """
     name_lower = sidecar_path.name.lower()
+    normalized_poster_name = (poster_asset_name or "poster").strip().lower()
     for sep in SEPARATORS:
-        suffix = f"{sep}poster"
+        suffix = f"{sep}{normalized_poster_name}"
         if name_lower.endswith(f"{suffix}{sidecar_path.suffix.lower()}"):
             return target_dir / f"{media_path.stem}{sidecar_path.suffix}"
 
@@ -172,6 +188,100 @@ def _is_media_file(path: Path) -> bool:
     return path.suffix.lower() not in IMAGE_EXTS and path.suffix.lower() not in NFO_EXTS
 
 
+def _local_tag_name(tag_name: str) -> str:
+    """返回 XML 标签的本地名称, 忽略命名空间前缀.
+
+    Args:
+        tag_name: XML 标签名, 可能带命名空间前缀, 例如 "{http://example.com}title"。
+
+    Returns:
+        去除命名空间后缀后的标签名。若原值不包含命名空间, 则原样返回。
+
+    """
+    if tag_name.startswith("{") and "}" in tag_name:
+        return tag_name.rsplit("}", 1)[1]
+    return tag_name
+
+
+def _parse_nfo_remove_tags(raw_tags: str | None) -> set[str]:
+    """解析前端传入的 NFO 删除标签配置.
+
+    约定：前端传入的是标签名字符串, 多标签使用逗号分隔, 支持中英文逗号以及
+    大小写不敏感匹配；标签内容本身不参与配置。
+
+    Args:
+        raw_tags: 由前端传入的标签名称文本, 多个标签使用逗号或中文逗号分隔。
+
+    Returns:
+        规范化后的标签名集合, 全部转换为小写并去掉命名空间前缀。
+
+    """
+    if raw_tags is None:
+        return set()
+
+    parts = re.split(r"[，,]+", str(raw_tags))
+    tags: set[str] = set()
+    for part in parts:
+        name = (part or "").strip()
+        if not name:
+            continue
+        normalized = _local_tag_name(name).strip().lower()
+        if normalized:
+            tags.add(normalized)
+    return tags
+
+
+def _rewrite_nfo_xml(source_nfo: Path, dest_nfo: Path, tag_names: str | None) -> None:
+    """读取 NFO XML 文件, 删除指定标签后写入目标位置.
+
+    该函数不会直接复制原始 NFO 文件, 而是会解析 XML, 并仅删除与配置中标签名
+    匹配的节点。这样可以保留其它 XML 内容, 确保目标 NFO 仍保持合法的 XML 结构。
+
+    Args:
+        source_nfo: 源 NFO 文件路径。
+        dest_nfo: 目标文件路径, 写入后的位置。
+        tag_names: 前端传入的标签名字符串, 多个标签用逗号分隔。
+
+    Returns:
+        无返回值, 函数会直接将处理后的 XML 写入目标文件。
+
+    Raises:
+        FileNotFoundError: 当源 NFO 文件不存在时抛出。
+        ET.ParseError: 当源 NFO 文件不是合法 XML 时抛出。
+        IsADirectoryError: 当目标路径已存在且为目录时抛出。
+
+    """
+    remove_tags = _parse_nfo_remove_tags(tag_names)
+    logger.debug(f"解析 NFO 删除标签配置: {remove_tags}")
+
+    tree = ET.parse(source_nfo)
+    root = tree.getroot()
+
+    def _strip_matching_children(node: ET.Element) -> None:
+        for child in list(node):
+            child_tag = _local_tag_name(child.tag).lower()
+            # logger.debug(f"检查 NFO 标签: {child_tag} 是否需要删除")
+            if child_tag in remove_tags:
+                logger.debug(f"删除 NFO 标签: {child_tag}")
+                node.remove(child)
+                continue
+            _strip_matching_children(child)
+
+    if remove_tags:
+        _strip_matching_children(root)
+
+    parent = dest_nfo.parent
+    if parent and not parent.exists():
+        parent.mkdir(parents=True, exist_ok=True)
+    if dest_nfo.exists() or dest_nfo.is_symlink():
+        if dest_nfo.is_dir() and not dest_nfo.is_symlink():
+            raise IsADirectoryError(f"目标 NFO 路径是目录, 不能覆盖: {dest_nfo}")
+        dest_nfo.unlink()
+
+    ET.indent(tree, space="    ", level=0)
+    tree.write(dest_nfo, encoding="utf-8", xml_declaration=True)
+
+
 class TransferImageSidecar(_PluginBase):  # noqa: D101
     # --- 插件元数据（前端/市场使用） ---
     # 在前端展示的插件名称
@@ -181,28 +291,31 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
     # 插件图标文件名（放在静态资源目录）
     plugin_icon = "movie.jpg"
     # 插件版本（应与 package.v2.json 保持一致）
-    plugin_version = "0.1.1"
+    plugin_version = "0.1.2"
     # 作者信息
     plugin_author = "cswhrdf"
-    # 配置项前缀，用于配置存储中区分本插件项
+    # 配置项前缀, 用于配置存储中区分本插件项
     plugin_config_prefix = "transfer_image_sidecar_"
-    # 插件加载顺序，值越小越早加载
+    # 插件加载顺序, 值越小越早加载
     plugin_order = 25
 
-    # 运行时启用开关，init_plugin 会根据配置覆盖
+    # 运行时启用开关, init_plugin 会根据配置覆盖
     _enabled: bool = True
-    _delay_seconds: int = 30
-    _enable_first_episode_promotion: bool = True
-    _media_poster_season: int = 1
-    _media_poster_episode: int = 1
-    _generate_season_posters: bool = True
-    _season_poster_episode: int = 1
+    _delay_seconds: int = 30  # 延迟秒数执行
+    _enable_first_episode_promotion: bool = True  # 启用媒体海报转移
+    _media_poster_season: int = 1  # 媒体海报季
+    _media_poster_episode: int = 1  # 媒体海报集
+    _generate_season_posters: bool = True  # 启用转移季海报
+    _season_poster_episode: int = 1  # 季海报集
+    _poster_asset_name: str = "poster"  # 集封面匹配后缀
+    _fanart_asset_name: str = "fanart"  # 集艺术图匹配后缀
+    _nfo_remove_tags: str = ""  # NFO XML 中要删除的标签名称, 多个标签用逗号分隔
     _delayed_timer: Timer | None = None
 
     def init_plugin(self, config: dict | None = None):
         """初始化插件: 根据传入配置设置启用状态.
 
-        说明: 宿主在加载插件或配置变更时调用此方法。若需要注册事件或启动后台任务，
+        说明: 宿主在加载插件或配置变更时调用此方法。若需要注册事件或启动后台任务,
         可在此处完成（建议使用非阻塞方式）
         """
         config = config or {}
@@ -213,6 +326,9 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
         self._media_poster_episode = max(1, int(config.get("media_poster_episode", 1)))
         self._generate_season_posters = bool(config.get("generate_season_posters", True))
         self._season_poster_episode = max(1, int(config.get("season_poster_episode", 1)))
+        self._poster_asset_name = (config.get("poster_asset_name") or "poster").strip() or "poster"
+        self._fanart_asset_name = (config.get("fanart_asset_name") or "fanart").strip() or "fanart"
+        self._nfo_remove_tags = str(config.get("nfo_remove_tags") or "").strip()
 
     def get_state(self) -> bool:
         """返回插件当前启用状态.
@@ -229,7 +345,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
         Args:
             context: 失败上下文描述
             exc: 具体异常对象
-            level: 日志级别，可为 "warn" 或 "error"；用于统一控制本地日志输出。
+            level: 日志级别, 可为 "warn" 或 "error"；用于统一控制本地日志输出。
 
         """
         message = f"转移图片挂载文件处理失败：{context}\n错误：{exc}"
@@ -254,10 +370,10 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
         """按索引将源文件和目标文件配对.
 
         Args:
-            transferinfo: 转移事件传递的上下文对象，包含 file_list 和 file_list_new
+            transferinfo: 转移事件传递的上下文对象, 包含 file_list 和 file_list_new
 
         Returns:
-            [(source_path, target_path)] 列表，用于一一对应原文件和目标文件
+            [(source_path, target_path)] 列表, 用于一一对应原文件和目标文件
 
         """
         src_list: list[str] = transferinfo.file_list or []
@@ -271,16 +387,16 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
         new_path: Path,
         transfer_type: str,
     ) -> None:
-        """对 S01E01 这类首集媒体，提升同名 poster/fanart 到媒体级目录.
+        """对 S01E01 这类首集媒体, 提升同名 poster/fanart 到媒体级目录.
 
-        这类文件通常会带有同名的 poster/fanart 侧载图，需在目标媒体目录中写出
-        `poster.ext` 和 `fanart.ext`，便于宿主端在媒体层直接展示海报与背景图。
+        这类文件通常会带有同名的 poster/fanart 侧载图, 需在目标媒体目录中写出
+        `poster.ext` 和 `fanart.ext`, 便于宿主端在媒体层直接展示海报与背景图。
 
         Args:
             source_dir: 源媒体文件所在目录
             src_path: 源媒体文件路径
             new_path: 目标媒体文件路径
-            transfer_type: 当前文件转移方式，支持 copy、move、hardlink、symlink
+            transfer_type: 当前文件转移方式, 支持 copy、move、hardlink、symlink
 
         """
         parsed = _parse_season_episode(new_path.name)
@@ -295,7 +411,8 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
 
         target_dir = new_path.parent.parent
         for kind in ("poster", "fanart"):
-            path_list = _find_asset_for_stem(source_dir, src_path.stem, kind)
+            asset_name = self._poster_asset_name if kind == "poster" else self._fanart_asset_name
+            path_list = _find_asset_for_stem(source_dir, src_path.stem, kind, asset_name)
             if not path_list:
                 continue
             asset_path = path_list[0] if isinstance(path_list, list) else path_list
@@ -317,9 +434,9 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
         """将源目录中的 poster/NFO 资源搬移到目标目录.
 
         Args:
-            oldp: 源媒体文件路径。该文件本体必须是媒体文件，不是 sidecar 文件
+            oldp: 源媒体文件路径。该文件本体必须是媒体文件, 不是 sidecar 文件
             newp: 转移后的目标媒体文件路径
-            transfer_type: 当前转移方式，影响 poster/NFO 复制方式，可为 copy、move、hardlink、symlink
+            transfer_type: 当前转移方式, 影响 poster/NFO 复制方式, 可为 copy、move、hardlink、symlink
 
         """
         if not oldp or not newp:
@@ -336,13 +453,13 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
 
         stem = src_path.stem
 
-        assets = _find_asset_for_stem(source_dir, stem, "poster")
+        assets = _find_asset_for_stem(source_dir, stem, "poster", self._poster_asset_name)
         if not assets:
             return
         if not isinstance(assets, list):
             assets = [assets]
         for img in assets:
-            dest = _build_renamed_sidecar_path(target_dir, new_path, img)
+            dest = _build_renamed_sidecar_path(target_dir, new_path, img, self._poster_asset_name)
             try:
                 _transfer_with_method(img, dest, transfer_type)
                 logger.info(f"按 {transfer_type} 方式转移 poster: {img} -> {dest}")
@@ -356,10 +473,10 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
             nfo = nfo[0]
         dest_nfo = target_dir / f"{new_path.stem}.nfo"
         try:
-            _transfer_with_method(nfo, dest_nfo, "copy")
-            logger.info(f"按 copy 方式转移 NFO: {nfo} -> {dest_nfo}")
+            _rewrite_nfo_xml(nfo, dest_nfo, self._nfo_remove_tags)
+            logger.info(f"已按配置过滤 NFO 标签后写入: {nfo} -> {dest_nfo}")
         except Exception as e:  # noqa: BLE001
-            self._notify_transfer_failure(f"转移 NFO 失败 {nfo} -> {dest_nfo}", e, level="warn")
+            self._notify_transfer_failure(f"转移并过滤 NFO 失败 {nfo} -> {dest_nfo}", e, level="warn")
 
     def _collect_season_posters_and_fanart(
         self,
@@ -368,13 +485,13 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
         new_path: Path,
         season_posters: dict[int, tuple[int, Path, Path]],
     ) -> dict[int, tuple[int, Path, Path]]:
-        """根据目标文件名提取季/集信息，并记录该季最早的 poster 素材.
+        """根据目标文件名提取季/集信息, 并记录该季最早的 poster 素材.
 
         Args:
             source_dir: 媒体源文件所在目录
             old_path: 当前已转移好的媒体源文件路径
             new_path: 当前已转移好的目标媒体文件路径
-            season_posters: 已累计的季 poster 字典，键为 season 编号，值为 (episode, poster_path)
+            season_posters: 已累计的季 poster 字典, 键为 season 编号, 值为 (episode, poster_path)
 
         Returns:
             更新后的 season_posters 字典
@@ -389,7 +506,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
         ep_poster = None
         for sep in SEPARATORS:
             for ext in IMAGE_EXTS:
-                candidate = source_dir / f"{episode_stem}{sep}poster{ext}"
+                candidate = source_dir / f"{episode_stem}{sep}{self._poster_asset_name}{ext}"
                 if candidate.exists():
                     ep_poster = candidate
                     break
@@ -417,8 +534,8 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
         在 Season 目录下输出 poster 文件
 
         Args:
-            season_posters: 季 poster 素材字典，键为 season 编号，值为 (episode, poster_path)
-            transfer_type: 生成时使用的传输方式，例如 copy、move、hardlink、symlink
+            season_posters: 季 poster 素材字典, 键为 season 编号, 值为 (episode, poster_path)
+            transfer_type: 生成时使用的传输方式, 例如 copy、move、hardlink、symlink
 
         """
         for season, (_, poster_path, new_path) in season_posters.items():
@@ -436,10 +553,10 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
                 self._notify_transfer_failure(f"设置第 {season} 季海报失败", e, level="warn")
 
     def _process_transfer_event(self, transferinfo: TransferInfo) -> None:
-        """延迟处理转移完成事件，并在等待窗口结束后执行 sidecar 与季 poster 整理.
+        """延迟处理转移完成事件, 并在等待窗口结束后执行 sidecar 与季 poster 整理.
 
         Args:
-            transferinfo: 转移事件对象，包含 file_list、file_list_new 和 transfer_type
+            transferinfo: 转移事件对象, 包含 file_list、file_list_new 和 transfer_type
 
         """
         try:
@@ -473,13 +590,13 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
             if self._generate_season_posters:
                 self._apply_generated_assets(season_posters, transfer_type)
             else:
-                logger.debug("已关闭季海报生成，未执行 _apply_generated_assets")
+                logger.debug("已关闭季海报生成, 未执行 _apply_generated_assets")
         except Exception as e:  # noqa: BLE001
             self._notify_transfer_failure("transfer_image_sidecar 执行失败", e, level="error")
 
     @eventmanager.register(EventType.TransferComplete)
     def on_transfer_complete(self, event: Event):
-        """处理 TransferComplete 事件: 将执行延后到媒体整理完成后，并给待刮削内容留出处理窗口."""
+        """处理 TransferComplete 事件: 将执行延后到媒体整理完成后, 并给待刮削内容留出处理窗口."""
         if not self._enabled:
             return
         event_data = event.event_data or {}
@@ -493,7 +610,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
         self._delayed_timer = Timer(self._delay_seconds, self._process_transfer_event, args=(transferinfo,))
         self._delayed_timer.daemon = True
         self._delayed_timer.start()
-        logger.info(f"transfer_image_sidecar 已延迟 {self._delay_seconds} 秒执行，等待媒体整理与待刮削项完成")
+        logger.info(f"transfer_image_sidecar 已延迟 {self._delay_seconds} 秒执行, 等待媒体整理与待刮削项完成")
 
     @staticmethod
     def get_command() -> list:
@@ -510,7 +627,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
         按功能分组显示：
         - 基础执行参数：启用插件、延迟执行
         - 媒体海报：媒体级 poster/fanart 的来源季/集
-        - 季海报：默认按当前季处理，仅配置来源集编号，不支持跨季选择
+        - 季海报：默认按当前季处理, 仅配置来源集编号, 不支持跨季选择
         """
         return [
             {
@@ -537,11 +654,11 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
                                         "component": "VTextField",
                                         "props": {
                                             "model": "delay_seconds",
-                                            "label": "延迟执行秒数",
+                                            "label": "延迟秒数执行",
                                             "type": "number",
                                             "suffix": "秒",
                                             "hint": "在媒体整理完成后等待待刮削项完成的延迟时间(\
-                                                由于不确定待刮削项的数量和处理时间，建议设置为 30 秒以上)",
+                                                由于不确定待刮削项的数量和处理时间, 建议设置为 30 秒以上)",
                                         },
                                     }
                                 ],
@@ -609,7 +726,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
                                         "props": {
                                             "model": "generate_season_posters",
                                             "label": "启用转移季海报",
-                                            "hint": "默认按当前季处理，不支持跨季选择",
+                                            "hint": "默认按当前季处理, 不支持跨季选择",
                                         },
                                     }
                                 ],
@@ -631,6 +748,58 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
                             },
                         ],
                     },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "poster_asset_name",
+                                            "label": "集封面匹配后缀",
+                                            "hint": "用于识别源目录里集封面图的后缀名, 默认 poster",
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12, "md": 6},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "fanart_asset_name",
+                                            "label": "集艺术图匹配后缀",
+                                            "hint": "用于识别源目录里集艺术图的后缀名, 默认 fanart",
+                                        },
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {
+                                "component": "VCol",
+                                "props": {"cols": 12},
+                                "content": [
+                                    {
+                                        "component": "VTextField",
+                                        "props": {
+                                            "model": "nfo_remove_tags",
+                                            "label": "NFO 删除标签",
+                                            "hint": "只填 XML 标签名, 多标签用逗号分隔, 例如：genre,actor,plot,演职员",
+                                        },
+                                    }
+                                ],
+                            }
+                        ],
+                    },
                 ],
             }
         ], {
@@ -641,6 +810,9 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
             "media_poster_episode": 1,
             "generate_season_posters": True,
             "season_poster_episode": 1,
+            "poster_asset_name": "poster",
+            "fanart_asset_name": "fanart",
+            "nfo_remove_tags": "",
         }
 
     def get_page(self):
@@ -654,11 +826,11 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
     def get_module(self):
         """返回插件模块声明.
 
-        当前插件不覆写 transfer() 钩子，而是通过 TransferComplete 事件在转移完成后
-        统一处理 sidecar、NFO 和季海报的生成，因此这里返回空字典即可。
+        当前插件不覆写 transfer() 钩子, 而是通过 TransferComplete 事件在转移完成后
+        统一处理 sidecar、NFO 和季海报的生成, 因此这里返回空字典即可。
 
         Returns:
-            一个空字典，表示无额外模块注入项。
+            一个空字典, 表示无额外模块注入项。
 
         """
         # 不覆写 transfer() 钩子；当前插件基于 TransferComplete 事件进行处理

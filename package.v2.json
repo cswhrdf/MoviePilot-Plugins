@@ -4,13 +4,14 @@
     "name": "媒体刮削文件转移",
     "description": "转移媒体文件目录下的fanart/poster和nfo,适用与已刮削完成的媒体文件",
     "labels": "transfer,image,fanart,poster,nfo,sidecar",
-    "version": "0.1.0",
+    "version": "0.1.2",
     "icon": "movie.jpg",
     "author": "cswhrdf",
     "level": 50,
     "history": {
       "0.1.0": "初始版本：监听 TransferComplete, 将同前缀的 fanart/poster 和 nfo 按规则转移/复制到目标目录",
-      "0.1.1": "增加整理异常的通知"
+      "0.1.1": "增加整理异常的通知",
+      "0.1.2": "允许自定义图片匹配名后缀, poster和fanart 的外部配置值, 新增nfo文件指删除定标签功能"
     }
   }
 }
