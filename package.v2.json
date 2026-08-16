@@ -1,1 +1,15 @@
-{}
+{
+  "TransferImageSidecar": {
+    "v3": false,
+    "name": "转移图片挂载文件",
+    "description": "整理媒体文件时把同前缀的 fanart/poster 图片和 .nfo 一并整理到目标目录（本地存储实现）。",
+    "labels": "transfer,image,fanart,poster,nfo,sidecar",
+    "version": "0.1.0",
+    "icon": "movie.jpg",
+    "author": "cswhrdf",
+    "level": 50,
+    "history": {
+      "0.1.0": "初始版本：监听 TransferComplete，将同前缀的 fanart/poster 和 nfo 按规则复制/移动到目标目录。"
+    }
+  }
+}

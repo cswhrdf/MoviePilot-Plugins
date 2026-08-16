@@ -1,0 +1,108 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+src = [
+    "plugins",
+    "plugins.v2",
+    "plugins.v3",
+    "tests",
+]
+extend-exclude = [
+    "**/.*",
+    "**/node_modules",
+    "__pycache__",
+    "docs",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "F",
+    "W",
+    "I",
+    "B",
+    "D",
+    "UP",
+    "C90",
+    "N",
+    "SIM",
+    "ASYNC",
+]
+fixable = [
+    "ALL",
+    "UP035",
+    "F401",
+    "UP",
+]
+unfixable = []
+ignore = ["D104"]
+
+[tool.ruff.lint.flake8-unused-arguments]
+ignore-variadic-names = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = true
+
+[tool.mypy]
+python_version = "3.12"
+files = [
+    "plugins",
+    "plugins.v2",
+    "plugins.v3",
+    "tests",
+]
+warn_unused_configs = true
+check_untyped_defs = true
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+no_implicit_optional = true
+show_error_codes = true
+pretty = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+strict_optional = true
+exclude = [
+    "^docs/",
+    "^venv/",
+]
+
+[tool.pyright]
+include = [
+    "plugins",
+    "plugins.v2",
+    "plugins.v3",
+    "tests",
+]
+exclude = [
+    "**/.*",
+    "**/node_modules",
+    "**/__pycache__",
+    "docs",
+]
+extraPaths = [
+    ".",
+    "./plugins",
+    "./plugins.v2",
+    "./plugins.v3",
+    "./tests",
+]
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+reportMissingImports = false
+reportMissingTypeStubs = false
+reportUnknownMemberType = "none"
+reportUnknownVariableType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownLambdaType = "none"
+reportUnknownParameterType = "none"
+reportUnknownReturnType = "none"
+reportUnusedImport = "error"
+reportUnusedClass = "warning"
+reportUnusedFunction = "warning"
+reportUnusedVariable = "warning"
+reportUnusedCoroutine = "warning"
