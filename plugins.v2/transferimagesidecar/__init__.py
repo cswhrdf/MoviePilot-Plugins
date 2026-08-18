@@ -260,7 +260,6 @@ def _rewrite_nfo_xml(source_nfo: Path, dest_nfo: Path, tag_names: str | None) ->
     def _strip_matching_children(node: ET.Element) -> None:
         for child in list(node):
             child_tag = _local_tag_name(child.tag).lower()
-            # logger.debug(f"检查 NFO 标签: {child_tag} 是否需要删除")
             if child_tag in remove_tags:
                 logger.debug(f"删除 NFO 标签: {child_tag}")
                 node.remove(child)
@@ -291,7 +290,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
     # 插件图标文件名（放在静态资源目录）
     plugin_icon = "movie.jpg"
     # 插件版本（应与 package.v2.json 保持一致）
-    plugin_version = "0.1.2"
+    plugin_version = "0.1.3"
     # 作者信息
     plugin_author = "cswhrdf"
     # 配置项前缀, 用于配置存储中区分本插件项
@@ -301,7 +300,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
 
     # 运行时启用开关, init_plugin 会根据配置覆盖
     _enabled: bool = True
-    _delay_seconds: int = 30  # 延迟秒数执行
+    _delay_seconds: int = 20  # 延迟秒数执行
     _enable_first_episode_promotion: bool = True  # 启用媒体海报转移
     _media_poster_season: int = 1  # 媒体海报季
     _media_poster_episode: int = 1  # 媒体海报集
@@ -311,6 +310,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
     _fanart_asset_name: str = "fanart"  # 集艺术图匹配后缀
     _nfo_remove_tags: str = ""  # NFO XML 中要删除的标签名称, 多个标签用逗号分隔
     _delayed_timer: Timer | None = None
+    _pending_transfer_events: list[TransferInfo] = []
 
     def init_plugin(self, config: dict | None = None):
         """初始化插件: 根据传入配置设置启用状态.
@@ -329,6 +329,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
         self._poster_asset_name = (config.get("poster_asset_name") or "poster").strip() or "poster"
         self._fanart_asset_name = (config.get("fanart_asset_name") or "fanart").strip() or "fanart"
         self._nfo_remove_tags = str(config.get("nfo_remove_tags") or "").strip()
+        self._pending_transfer_events = []
 
     def get_state(self) -> bool:
         """返回插件当前启用状态.
@@ -594,6 +595,67 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
         except Exception as e:  # noqa: BLE001
             self._notify_transfer_failure("transfer_image_sidecar 执行失败", e, level="error")
 
+    @staticmethod
+    def _normalize_transferinfo_key(value):
+        """把 TransferInfo 转换成可哈希的稳定键，便于去重.
+
+        这里不仅处理 list/dict/set, 还对不能直接 hash 的对象回退到字符串，避免
+        事件签名因为某个属性对象不可哈希而导致整个去重逻辑中断
+        """
+        if isinstance(value, (str, int, float, bool, type(None))):
+            return value
+        if isinstance(value, Path):
+            return str(value)
+        if isinstance(value, (list, tuple)):
+            return tuple(TransferImageSidecar._normalize_transferinfo_key(item) for item in value)
+        if isinstance(value, dict):
+            return tuple(
+                sorted((str(k), TransferImageSidecar._normalize_transferinfo_key(v)) for k, v in value.items())
+            )
+        if isinstance(value, set):
+            return tuple(sorted(TransferImageSidecar._normalize_transferinfo_key(item) for item in value))
+        try:
+            hash(value)
+            return value
+        except TypeError:
+            return repr(value)
+
+    @classmethod
+    def _transferinfo_signature(cls, transferinfo: TransferInfo) -> tuple:
+        """基于事件内容生成去重签名，确保相同事件不会重复入队."""
+        data = getattr(transferinfo, "__dict__", {})
+        return tuple(sorted((str(k), cls._normalize_transferinfo_key(v)) for k, v in data.items()))
+
+    def _refresh_delay_timer(self) -> None:
+        """重置当前延迟计时器，刷新等待窗口."""
+        if self._delayed_timer and self._delayed_timer.is_alive():
+            self._delayed_timer.cancel()
+
+        self._delayed_timer = Timer(self._delay_seconds, self._process_delayed_pending_events)
+        self._delayed_timer.daemon = True
+        self._delayed_timer.start()
+
+    def _process_delayed_pending_events(self) -> None:
+        """处理在延迟窗口内累计的多个 TransferComplete 事件.
+
+        在同一批次中，多个事件可能内容完全相同；这些重复事件不需要重复入队，
+        但同一批次中新出现的有效事件应刷新当前的等待时间，避免丢失等待窗口
+        """
+        try:
+            pending_events = self._pending_transfer_events
+            self._pending_transfer_events = []
+            self._delayed_timer = None
+
+            if not pending_events:
+                logger.debug("没有待处理的延迟事件")
+                return
+
+            logger.debug(f"开始处理 {len(pending_events)} 个累计的 TransferComplete 事件")
+            for transferinfo in pending_events:
+                self._process_transfer_event(transferinfo)
+        except Exception as e:  # noqa: BLE001
+            self._notify_transfer_failure("处理累积的延迟事件失败", e, level="error")
+
     @eventmanager.register(EventType.TransferComplete)
     def on_transfer_complete(self, event: Event):
         """处理 TransferComplete 事件: 将执行延后到媒体整理完成后, 并给待刮削内容留出处理窗口."""
@@ -603,13 +665,32 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
         transferinfo: TransferInfo = event_data.get("transferinfo")
         if not transferinfo:
             return
+        logger.debug(f"收到 TransferComplete 事件: {transferinfo}")
+
+        signature = self._transferinfo_signature(transferinfo)
+        existing_signatures = {self._transferinfo_signature(item) for item in self._pending_transfer_events}
+
+        if signature in existing_signatures:
+            logger.debug(
+                "忽略重复 TransferComplete 事件, 仅刷新队列等待时间: "
+                f"{transferinfo.file_list if getattr(transferinfo, 'file_list', None) else []}"
+            )
+            if (self._delayed_timer and self._delayed_timer.is_alive()) or self._pending_transfer_events:
+                self._refresh_delay_timer()
+            return
+
+        self._pending_transfer_events.append(transferinfo)
+        logger.debug(
+            f"收到 TransferComplete 事件, 当前累计队列大小={len(self._pending_transfer_events)}, "
+            f"延迟={self._delay_seconds} 秒"
+        )
 
         if self._delayed_timer and self._delayed_timer.is_alive():
-            self._delayed_timer.cancel()
+            logger.debug("已有延迟任务在运行, 刷新等待时间并继续累积事件")
+            self._refresh_delay_timer()
+            return
 
-        self._delayed_timer = Timer(self._delay_seconds, self._process_transfer_event, args=(transferinfo,))
-        self._delayed_timer.daemon = True
-        self._delayed_timer.start()
+        self._refresh_delay_timer()
         logger.info(f"transfer_image_sidecar 已延迟 {self._delay_seconds} 秒执行, 等待媒体整理与待刮削项完成")
 
     @staticmethod
@@ -658,7 +739,7 @@ class TransferImageSidecar(_PluginBase):  # noqa: D101
                                             "type": "number",
                                             "suffix": "秒",
                                             "hint": "在媒体整理完成后等待待刮削项完成的延迟时间(\
-                                                由于不确定待刮削项的数量和处理时间, 建议设置为 30 秒以上)",
+                                                如果要刮削图片建议延长等待时间以确保图片刮削完成)",
                                         },
                                     }
                                 ],
