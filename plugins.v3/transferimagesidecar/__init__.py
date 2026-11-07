@@ -29,6 +29,26 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 NFO_EXTS = {".nfo"}
 SEPARATORS = ["-", "_", " ", "."]
 
+# 常用 NFO 标签候选；仅作为 VCombobox 的快捷选项，用户可以自行输入其它标签
+NFO_REMOVE_TAG_PRESETS = [
+    "genre",
+    "tag",
+    "actor",
+    "plot",
+    "outline",
+    "tagline",
+    "credits",
+    "director",
+    "studio",
+    "country",
+    "mpaa",
+    "uniqueid",
+    "trailer",
+    "thumb",
+    "fanart",
+    "rating",
+]
+
 
 def _remove_conflicting_image_targets(src: Path, dest: Path) -> None:
     """删除目标目录中与待写入图片同 stem 的其他图片文件.
@@ -216,26 +236,47 @@ def _local_tag_name(tag_name: str) -> str:
     return tag_name
 
 
-def _parse_nfo_remove_tags(raw_tags: str | None) -> set[str]:
-    """解析前端传入的 NFO 删除标签配置.
-
-    约定：前端传入的是标签名字符串, 多标签使用逗号分隔, 支持中英文逗号以及
-    大小写不敏感匹配；标签内容本身不参与配置。
+def _iter_raw_tag_values(raw_tags: Any) -> list[Any]:
+    """把配置原值展开成待规范化的标签项列表.
 
     Args:
-        raw_tags: 由前端传入的标签名称文本, 多个标签使用逗号或中文逗号分隔。
+        raw_tags: 配置中的标签原值, 可能是逗号分隔字符串、字符串列表,
+            也可能是 VCombobox 使用 {title, value} 选项时遗留的对象列表
+
+    Returns:
+        待进一步规范化的原始项列表
+
+    """
+    if raw_tags is None:
+        return []
+    if isinstance(raw_tags, str):
+        return re.split(r"[，,\s]+", raw_tags)
+    if isinstance(raw_tags, dict):
+        return [raw_tags]
+    if isinstance(raw_tags, (list, tuple, set)):
+        return list(raw_tags)
+    return [raw_tags]
+
+
+def _parse_nfo_remove_tags(raw_tags: Any) -> set[str]:
+    """解析前端传入的 NFO 删除标签配置.
+
+    配置页使用 chips 多选后传的是字符串列表；旧版本存的是逗号分隔字符串, 两者
+    都需兼容。标签名大小写不敏感, 并会去掉 XML 命名空间前缀。
+
+    Args:
+        raw_tags: 标签原值, 支持逗号分隔字符串、字符串列表、单个字符串或 None
 
     Returns:
         规范化后的标签名集合, 全部转换为小写并去掉命名空间前缀。
 
     """
-    if raw_tags is None:
-        return set()
-
-    parts = re.split(r"[，,]+", str(raw_tags))
     tags: set[str] = set()
-    for part in parts:
-        name = (part or "").strip()
+    for item in _iter_raw_tag_values(raw_tags):
+        if isinstance(item, dict):
+            # VCombobox 若使用 {title, value} 作为选项，会原样存下对象
+            item = item.get("value") or item.get("title") or ""
+        name = str(item or "").strip()
         if not name:
             continue
         normalized = _local_tag_name(name).strip().lower()
@@ -244,7 +285,7 @@ def _parse_nfo_remove_tags(raw_tags: str | None) -> set[str]:
     return tags
 
 
-def _rewrite_nfo_xml(source_nfo: Path, dest_nfo: Path, tag_names: str | None) -> None:
+def _rewrite_nfo_xml(source_nfo: Path, dest_nfo: Path, remove_tags: set[str]) -> None:
     """读取 NFO XML 文件, 删除指定标签后写入目标位置.
 
     该函数不会直接复制原始 NFO 文件, 而是会解析 XML, 并仅删除与配置中标签名
@@ -253,7 +294,7 @@ def _rewrite_nfo_xml(source_nfo: Path, dest_nfo: Path, tag_names: str | None) ->
     Args:
         source_nfo: 源 NFO 文件路径。
         dest_nfo: 目标文件路径, 写入后的位置。
-        tag_names: 前端传入的标签名字符串, 多个标签用逗号分隔。
+        remove_tags: 已规范化的待删除标签名集合；为空时仅重写不删节点。
 
     Returns:
         无返回值, 函数会直接将处理后的 XML 写入目标文件。
@@ -264,8 +305,7 @@ def _rewrite_nfo_xml(source_nfo: Path, dest_nfo: Path, tag_names: str | None) ->
         IsADirectoryError: 当目标路径已存在且为目录时抛出。
 
     """
-    remove_tags = _parse_nfo_remove_tags(tag_names)
-    logger.debug(f"解析 NFO 删除标签配置: {remove_tags}")
+    logger.debug(f"按配置删除 NFO 标签: {remove_tags}")
 
     tree = ET.parse(source_nfo)
     root = tree.getroot()
@@ -353,7 +393,7 @@ class TransferImageSidecar(_PluginBase):
     _season_poster_episode: int = 1  # 季海报集
     _poster_asset_name: str = "poster"  # 集封面匹配后缀
     _fanart_asset_name: str = "fanart"  # 集艺术图匹配后缀
-    _nfo_remove_tags: str = ""  # NFO XML 中要删除的标签名称, 多个标签用逗号分隔
+    _nfo_remove_tags: set[str] = set()  # 已规范化的 NFO 待删除标签集合
     _delayed_timer: Timer | None = None
     _pending_transfer_events: list[TransferInfo] = []
 
@@ -374,7 +414,8 @@ class TransferImageSidecar(_PluginBase):
         self._season_poster_episode = max(1, int(config.get("season_poster_episode", 1)))
         self._poster_asset_name = (config.get("poster_asset_name") or "poster").strip() or "poster"
         self._fanart_asset_name = (config.get("fanart_asset_name") or "fanart").strip() or "fanart"
-        self._nfo_remove_tags = str(config.get("nfo_remove_tags") or "").strip()
+        # 配置页为 chips 多选（列表），旧配置为逗号分隔字符串，统一在此规范化
+        self._nfo_remove_tags = _parse_nfo_remove_tags(config.get("nfo_remove_tags"))
         self._pending_transfer_events = []
 
     def get_state(self) -> bool:
@@ -894,11 +935,16 @@ class TransferImageSidecar(_PluginBase):
                                 "props": {"cols": 12},
                                 "content": [
                                     {
-                                        "component": "VTextField",
+                                        "component": "VCombobox",
                                         "props": {
                                             "model": "nfo_remove_tags",
                                             "label": "NFO 删除标签",
-                                            "hint": "只填 XML 标签名, 多标签用逗号分隔, 例如：genre,actor,plot,演职员",
+                                            "items": NFO_REMOVE_TAG_PRESETS,
+                                            "multiple": True,
+                                            "chips": True,
+                                            "closable-chips": True,
+                                            "clearable": True,
+                                            "hint": "输入标签名后回车添加, 点 × 删除; 上方候选为常用标签, 也可自行输入; 留空表示不删除任何标签",
                                         },
                                     }
                                 ],
@@ -917,7 +963,7 @@ class TransferImageSidecar(_PluginBase):
             "season_poster_episode": 1,
             "poster_asset_name": "poster",
             "fanart_asset_name": "fanart",
-            "nfo_remove_tags": "",
+            "nfo_remove_tags": [],
         }
 
     def get_page(self) -> list[dict[str, Any]] | None:
