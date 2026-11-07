@@ -944,7 +944,10 @@ class TransferImageSidecar(_PluginBase):
                                             "chips": True,
                                             "closable-chips": True,
                                             "clearable": True,
-                                            "hint": "输入标签名后回车添加, 点 × 删除; 上方候选为常用标签, 也可自行输入; 留空表示不删除任何标签",
+                                            "hint": (
+                                                "输入标签名后回车添加, 点 × 删除; "
+                                                "上方候选为常用标签, 也可自行输入; 留空表示不删除任何标签"
+                                            ),
                                         },
                                     }
                                 ],

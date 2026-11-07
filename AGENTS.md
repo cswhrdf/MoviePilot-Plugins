@@ -25,7 +25,7 @@ MoviePilot 插件仓库。本文件只写**从代码里看不出来、但容易�
 2. **索引条目**：v1 用 `package.json`、v2 用 `package.v2.json`、v3 用 `package.v3.json`；键为插件类名（如 `TransferImageSidecar`），不是目录名
 3. **图标**：`icon` 字段只写 `icons/` 下的文件名（如 `movie.jpg`），文件名大小写必须与磁盘完全一致 —— 部署环境为 Linux，大小写敏感
 4. **根 `README.md`**：在「插件清单」小节加/改一条，指向该插件自己的 `README.md` 相对路径 + 一句话描述
-5. **测试**：`tests/v3/<plugin_id>/` 或 `tests/v2/<plugin_id>/`（按 `pytest.ini` 约定）
+5. **测试**：`tests/v3/<plugin_id>/` 或 `tests/v2/<plugin_id>/`（按 `pyproject.toml` 中 `[tool.pytest.ini_options]` 的约定）
 
 索引条目中的 `version` 必须等于 `history` 里最高的版本号，二者不一致会被插件市场判定为版本异常。`history` 中已有条目是历史记录，只追加不改写。V3 副本的大版本必须等于旧代主版本加一（如 `0.1.3 -> 1.0.0`），这是 `.github/scripts/check_plugin_versions.py` 的硬校验。
 
@@ -40,7 +40,7 @@ MoviePilot 插件仓库。本文件只写**从代码里看不出来、但容易�
 
 ## 测试
 
-`pytest.ini` 是唯一权威配置：`testpaths = tests`，用例放 `tests/v1|v2|v3/<plugin_id>/`，文件 `test_*.py`，已注册 `v1`/`v2`/`v3` marker。
+`pyproject.toml` 的 `[tool.pytest.ini_options]` 是唯一权威测试配置：`testpaths = tests`，用例放 `tests/v1|v2|v3/<plugin_id>/`，文件 `test_*.py`，已注册 `v1`/`v2`/`v3` marker。仓库不再保留独立的 `pytest.ini`，不要再新建。
 
 各代必须在**独立会话**中运行，否则同名插件包会冲突：
 
@@ -48,13 +48,21 @@ MoviePilot 插件仓库。本文件只写**从代码里看不出来、但容易�
 pytest -m v2
 ```
 
-`pytest.ini` 中保留的 `filterwarnings` 只针对主程序依赖链和三方库；插件自身产生的告警应去修代码，不要往白名单里加。
+`[tool.pytest.ini_options]` 中保留的 `filterwarnings` 只针对主程序依赖链和三方库；插件自身产生的告警应去修代码，不要往白名单里加。
 
 ## 环境陷阱
 
 - 本地开发环境通常是 Windows，但插件运行于 Linux 容器：换行用 LF，路径分隔符与大小写按 Linux 处理。
 - `package*.json` 是本仓库最大的 diff 敏感文件。只做局部插入/替换，**不要整体格式化或重排键顺序**。
 - `.githooks/pre-push` 与 `.github/workflows/plugin-gate.yml` 会校验索引，改动后本地先跑一次预检再推送。
+
+## 代码风格
+
+`pyproject.toml` 的 `[tool.ruff]` 是唯一权威风格配置：`line-length = 120`，`select` 包含 `E/F/W/B/D/UP/C90/N/SIM/I/ASYNC`。**新增或修改 Python 文件后必须自己跑一遍 `ruff check` 并通过**，不要指望编辑器保存时才暴露问题。
+
+- `D` 组只认 ASCII 句末标点：中文 docstring 首行必须以 `.` 结尾，写成全角 `。` 会报 `D400`/`D415`（仓库现有插件源码就是这个写法，可参照 `plugins.v2/`）。
+- 不要用 `ruff check --fix --unsafe-fixes` 修 `D400`/`D415`，它会在 `。` 后再补一个 `.`，产出 `。.`；按上一条规则手改。
+- 超长字符串用括号隐式拼接分行，避免 `E501`。
 
 ## 文档写作
 

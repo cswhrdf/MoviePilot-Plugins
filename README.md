@@ -3,8 +3,6 @@
 MoviePilot 插件仓库，目录结构、索引格式与文档体系均沿用
 [MoviePilot 官方插件仓库](https://github.com/jxxghp/MoviePilot-Plugins)。
 
-[toc]
-
 ## 从这里开始
 
 | 场景 | 文档 |

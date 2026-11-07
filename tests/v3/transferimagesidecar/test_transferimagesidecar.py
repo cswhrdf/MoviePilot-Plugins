@@ -1,9 +1,10 @@
-"""媒体刮削文件转移（TransferImageSidecar）V3 实现的合同与纯逻辑单测。
+"""媒体刮削文件转移（TransferImageSidecar）V3 实现的合同与纯逻辑单测.
 
 按官方测试规范：通过生产命名空间 app.plugins.transferimagesidecar 导入插件
 （tests/conftest.py 负责注入后端与 plugins.v3/ 插件目录），并用 object.__new__
 绕过插件构造，只覆盖不依赖运行时组合根的合同与纯逻辑。
 """
+
 from __future__ import annotations
 
 import ast
@@ -25,12 +26,12 @@ LEGACY_SYMBOLS = ("SessionFactory", "AsyncSessionFactory", "NotificationType")
 
 
 def _load_plugin():
-    """按生产命名空间导入 V3 插件模块。"""
+    """按生产命名空间导入 V3 插件模块."""
     return importlib.import_module("app.plugins.transferimagesidecar")
 
 
 def _make_plugin(module):
-    """绕过运行时组装实例化插件，并补齐纯逻辑方法依赖的状态。"""
+    """绕过运行时组装实例化插件, 并补齐纯逻辑方法依赖的状态."""
     plugin = object.__new__(module.TransferImageSidecar)
     plugin._enabled = True
     plugin._delay_seconds = 0
@@ -48,7 +49,7 @@ def _make_plugin(module):
 
 
 def _imported_modules() -> list[str]:
-    """返回插件源码中出现的所有导入模块名。"""
+    """返回插件源码中出现的所有导入模块名."""
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
     modules: list[str] = []
     for node in ast.walk(tree):
@@ -60,7 +61,7 @@ def _imported_modules() -> list[str]:
 
 
 def _is_placeholder_stmt(stmt: ast.stmt) -> bool:
-    """复刻宿主 ObjectUtils 的占位语句判定。"""
+    """复刻宿主 ObjectUtils 的占位语句判定."""
     if isinstance(stmt, ast.Pass):
         return True
     if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant):
@@ -74,7 +75,7 @@ def _is_placeholder_stmt(stmt: ast.stmt) -> bool:
 
 
 def _method_body_is_placeholder(method_name: str) -> bool:
-    """判断指定方法的方法体是否全部由占位语句组成。"""
+    """判断指定方法的方法体是否全部由占位语句组成."""
     tree = ast.parse(SOURCE.read_text(encoding="utf-8"))
     for cls in [node for node in tree.body if isinstance(node, ast.ClassDef)]:
         if cls.name != "TransferImageSidecar":
@@ -89,7 +90,7 @@ def _method_body_is_placeholder(method_name: str) -> bool:
 
 
 def test_v3_metadata_and_indexes_are_aligned():
-    """插件版本、V3 索引条目与旧索引禁用标记必须一致。"""
+    """插件版本、V3 索引条目与旧索引禁用标记必须一致."""
     module = _load_plugin()
     v3 = json.loads((ROOT / "package.v3.json").read_text(encoding="utf-8"))
     v2 = json.loads((ROOT / "package.v2.json").read_text(encoding="utf-8"))
@@ -105,7 +106,7 @@ def test_v3_metadata_and_indexes_are_aligned():
 
 
 def test_plugin_metadata_matches_market_entry():
-    """插件类自报元数据应与市场索引展示字段保持一致。"""
+    """插件类自报元数据应与市场索引展示字段保持一致."""
     module = _load_plugin()
     entry = json.loads((ROOT / "package.v3.json").read_text(encoding="utf-8"))[PLUGIN_ID]
     plugin_class = module.TransferImageSidecar
@@ -118,7 +119,7 @@ def test_plugin_metadata_matches_market_entry():
 
 
 def test_plugin_only_uses_stable_v3_imports():
-    """V3 专用实现不得再依赖旧导入路径与宿主内部 Model。"""
+    """V3 专用实现不得再依赖旧导入路径与宿主内部 Model."""
     modules = _imported_modules()
     for name in modules:
         assert not name.startswith(LEGACY_MODULE_PREFIXES), name
@@ -134,7 +135,7 @@ def test_plugin_only_uses_stable_v3_imports():
 
 
 def test_plugin_registers_no_api_command_or_module():
-    """插件不注册 API/命令/模块，启用状态跟随配置。"""
+    """插件不注册 API/命令/模块, 启用状态跟随配置."""
     plugin = _make_plugin(_load_plugin())
 
     assert plugin.get_api() == []
@@ -147,7 +148,7 @@ def test_plugin_registers_no_api_command_or_module():
 
 
 def test_get_page_stays_placeholder_so_host_hides_detail_page():
-    """没有详情页时必须保持占位方法体，否则宿主会放出数据页入口。"""
+    """没有详情页时必须保持占位方法体, 否则宿主会放出数据页入口."""
     plugin = _make_plugin(_load_plugin())
 
     assert plugin.get_page() is None
@@ -156,7 +157,7 @@ def test_get_page_stays_placeholder_so_host_hides_detail_page():
 
 
 def test_init_plugin_applies_config():
-    """初始化应完整读取配置项。"""
+    """初始化应完整读取配置项."""
     plugin = _make_plugin(_load_plugin())
     plugin.init_plugin({
         "enabled": False,
@@ -184,7 +185,7 @@ def test_init_plugin_applies_config():
 
 
 def test_init_plugin_accepts_legacy_comma_string():
-    """旧配置是逗号分隔字符串，必须继续被解析成标签集合。"""
+    """旧配置是逗号分隔字符串, 必须继续被解析成标签集合."""
     plugin = _make_plugin(_load_plugin())
     plugin.init_plugin({"nfo_remove_tags": "genre, actor，tag"})
 
@@ -192,7 +193,7 @@ def test_init_plugin_accepts_legacy_comma_string():
 
 
 def test_init_plugin_without_config_keeps_defaults():
-    """未传入配置时不得抛异常，状态回到默认值。"""
+    """未传入配置时不得抛异常, 状态回到默认值."""
     plugin = _make_plugin(_load_plugin())
     plugin.init_plugin(None)
 
@@ -202,11 +203,11 @@ def test_init_plugin_without_config_keeps_defaults():
 
 
 def test_init_plugin_is_repeatable_and_releases_previous_timer():
-    """配置重载时必须取消上一轮计时器并清空待处理队列。"""
+    """配置重载时必须取消上一轮计时器并清空待处理队列."""
     plugin = _make_plugin(_load_plugin())
 
     class _FakeTimer:
-        """只记录 cancel 调用的计时器替身。"""
+        """只记录 cancel 调用的计时器替身."""
 
         def __init__(self):
             self.cancelled = False
@@ -235,7 +236,7 @@ def test_init_plugin_is_repeatable_and_releases_previous_timer():
 
 
 def test_parse_season_episode_reads_sxxexx():
-    """季集解析支持大小写 SxxExx，无法识别时返回 None。"""
+    """季集解析支持大小写 SxxExx, 无法识别时返回 None."""
     module = _load_plugin()
 
     assert module._parse_season_episode("Show.S01E02.mkv") == (1, 2)
@@ -244,7 +245,7 @@ def test_parse_season_episode_reads_sxxexx():
 
 
 def test_parse_nfo_remove_tags_accepts_all_stored_shapes():
-    """标签解析兼容逗号字符串、列表、对象与命名空间前缀。"""
+    """标签解析兼容逗号字符串、列表、对象与命名空间前缀."""
     module = _load_plugin()
     parse = module._parse_nfo_remove_tags
 
@@ -259,7 +260,7 @@ def test_parse_nfo_remove_tags_accepts_all_stored_shapes():
 
 
 def test_local_tag_name_strips_namespace_only():
-    """命名空间前缀被剥离，普通标签名原样返回。"""
+    """命名空间前缀被剥离, 普通标签名原样返回."""
     module = _load_plugin()
 
     assert module._local_tag_name("{http://x}genre") == "genre"
@@ -267,7 +268,7 @@ def test_local_tag_name_strips_namespace_only():
 
 
 def test_is_media_file_excludes_sidecars():
-    """sidecar 与 NFO 不算媒体文件本体。"""
+    """Sidecar 与 NFO 不算媒体文件本体."""
     module = _load_plugin()
 
     assert module._is_media_file(Path("Show.mkv")) is True
@@ -279,7 +280,7 @@ def test_is_media_file_excludes_sidecars():
 
 
 def test_find_asset_for_stem_collects_every_poster_variant(tmp_path):
-    """poster 允许 -/_/空格/. 分隔与多种图片后缀，NFO 只取同名单个文件。"""
+    """Poster 允许 -/_/空格/. 分隔与多种图片后缀, NFO 只取同名单个文件."""
     module = _load_plugin()
     stem = "Show.S01E01"
     for name in (f"{stem}-poster.jpg", f"{stem}_poster.png", f"{stem}.poster.webp", f"{stem}.nfo"):
@@ -299,7 +300,7 @@ def test_find_asset_for_stem_collects_every_poster_variant(tmp_path):
 
 
 def test_find_asset_for_stem_supports_custom_asset_name(tmp_path):
-    """自定义后缀名生效，缺省名称不参与匹配。"""
+    """自定义后缀名生效, 缺省名称不参与匹配."""
     module = _load_plugin()
     (tmp_path / "Show.S01E01-cover.jpg").write_bytes(b"x")
     (tmp_path / "Show.S01E01-poster.jpg").write_bytes(b"x")
@@ -310,7 +311,7 @@ def test_find_asset_for_stem_supports_custom_asset_name(tmp_path):
 
 
 def test_find_asset_for_stem_returns_empty_when_missing(tmp_path):
-    """没有匹配资产时 poster 返回空列表，NFO 返回 None。"""
+    """没有匹配资产时 poster 返回空列表, NFO 返回 None."""
     module = _load_plugin()
 
     assert module._find_asset_for_stem(tmp_path, "Missing", "poster", "poster") == []
@@ -318,7 +319,7 @@ def test_find_asset_for_stem_returns_empty_when_missing(tmp_path):
 
 
 def test_build_renamed_sidecar_path_uses_target_media_stem(tmp_path):
-    """侧载图最终以目标媒体文件的 stem 命名。"""
+    """侧载图最终以目标媒体文件的 stem 命名."""
     module = _load_plugin()
     media = tmp_path / "Show.S01E01.mkv"
     sidecar = tmp_path / "Show.S01E01-poster.jpg"
@@ -332,7 +333,7 @@ def test_build_renamed_sidecar_path_uses_target_media_stem(tmp_path):
 
 
 def test_transfer_with_method_copy_keeps_source(tmp_path):
-    """copy 方式保留源文件并复制内容。"""
+    """Copy 方式保留源文件并复制内容."""
     module = _load_plugin()
     src = tmp_path / "a.mkv"
     src.write_bytes(b"payload")
@@ -346,7 +347,7 @@ def test_transfer_with_method_copy_keeps_source(tmp_path):
 
 
 def test_transfer_with_method_move_removes_source(tmp_path):
-    """move 方式搬走源文件。"""
+    """Move 方式搬走源文件."""
     module = _load_plugin()
     src = tmp_path / "a.mkv"
     src.write_bytes(b"payload")
@@ -359,7 +360,7 @@ def test_transfer_with_method_move_removes_source(tmp_path):
 
 
 def test_transfer_with_method_hardlink_shares_inode(tmp_path):
-    """hardlink 与别名 link/hard 等价，共享同一 inode。"""
+    """Hardlink 与别名 link/hard 等价, 共享同一 inode."""
     module = _load_plugin()
     src = tmp_path / "a.mkv"
     src.write_bytes(b"payload")
@@ -371,7 +372,7 @@ def test_transfer_with_method_hardlink_shares_inode(tmp_path):
 
 
 def test_transfer_with_method_symlink_points_to_source(tmp_path):
-    """symlink 生成指向源文件的链接，环境不支持时跳过。"""
+    """Symlink 生成指向源文件的链接, 环境不支持时跳过."""
     module = _load_plugin()
     src = tmp_path / "a.mkv"
     src.write_bytes(b"payload")
@@ -387,7 +388,7 @@ def test_transfer_with_method_symlink_points_to_source(tmp_path):
 
 
 def test_transfer_with_method_drops_conflicting_image_suffix(tmp_path):
-    """写入新图片前清掉同 stem 的其它图片后缀，避免一份图片出现多份。"""
+    """写入新图片前清掉同 stem 的其它图片后缀, 避免同一张图片出现多份."""
     module = _load_plugin()
     src = tmp_path / "src.png"
     src.write_bytes(b"new")
@@ -401,7 +402,7 @@ def test_transfer_with_method_drops_conflicting_image_suffix(tmp_path):
 
 
 def test_transfer_with_method_rejects_directory_target(tmp_path):
-    """目标路径是目录时抛 IsADirectoryError，不得静默覆盖。"""
+    """目标路径是目录时抛 IsADirectoryError, 不得静默覆盖."""
     module = _load_plugin()
     src = tmp_path / "src.png"
     src.write_bytes(b"new")
@@ -415,7 +416,7 @@ def test_transfer_with_method_rejects_directory_target(tmp_path):
 
 
 def test_rewrite_nfo_xml_removes_configured_tags(tmp_path):
-    """只删除配置中的标签，其余结构与内容保留。"""
+    """只删除配置中的标签, 其余结构与内容保留."""
     module = _load_plugin()
     source = tmp_path / "a.nfo"
     source.write_text(
@@ -433,7 +434,7 @@ def test_rewrite_nfo_xml_removes_configured_tags(tmp_path):
 
 
 def test_rewrite_nfo_xml_matches_namespaced_tags(tmp_path):
-    """带命名空间的标签按本地名匹配。"""
+    """带命名空间的标签按本地名匹配."""
     module = _load_plugin()
     source = tmp_path / "a.nfo"
     source.write_text(
@@ -450,7 +451,7 @@ def test_rewrite_nfo_xml_matches_namespaced_tags(tmp_path):
 
 
 def test_rewrite_nfo_xml_without_tags_keeps_content(tmp_path):
-    """未配置删除标签时仍写出一份合法 XML。"""
+    """未配置删除标签时仍写出一份合法 XML."""
     module = _load_plugin()
     source = tmp_path / "a.nfo"
     source.write_text("<movie><genre>Action</genre></movie>", encoding="utf-8")
@@ -465,7 +466,7 @@ def test_rewrite_nfo_xml_without_tags_keeps_content(tmp_path):
 
 
 def test_transfer_sidecars_and_nfo_copies_poster_and_filtered_nfo(tmp_path):
-    """同时存在 poster 与 NFO 时，两者都会被整理到目标目录。"""
+    """同时存在 poster 与 NFO 时, 两者都会被整理到目标目录."""
     plugin = _make_plugin(_load_plugin())
     plugin._nfo_remove_tags = {"genre"}
 
@@ -491,7 +492,7 @@ def test_transfer_sidecars_and_nfo_copies_poster_and_filtered_nfo(tmp_path):
 
 
 def test_promote_media_assets_can_be_switched_off(tmp_path):
-    """关闭媒体海报转移后，不得在媒体目录写出 poster/fanart。"""
+    """关闭媒体海报转移后, 不得在媒体目录写出 poster/fanart."""
     plugin = _make_plugin(_load_plugin())
     plugin._enable_first_episode_promotion = False
 
@@ -515,7 +516,7 @@ def test_promote_media_assets_can_be_switched_off(tmp_path):
 
 
 def test_promote_media_assets_writes_series_level_poster(tmp_path):
-    """命中所配置季/集时，poster/fanart 提升到媒体目录。"""
+    """命中所配置季/集时, poster/fanart 提升到媒体目录."""
     plugin = _make_plugin(_load_plugin())
 
     source_dir = tmp_path / "downloads"
@@ -540,7 +541,7 @@ def test_promote_media_assets_writes_series_level_poster(tmp_path):
 
 
 def test_collect_and_apply_season_poster(tmp_path):
-    """季海报取配置集素材，同时写出 Season 目录 poster 与 seasonXX-poster。"""
+    """季海报取配置集素材, 同时写出 Season 目录 poster 与 seasonXX-poster."""
     plugin = _make_plugin(_load_plugin())
     plugin._season_poster_episode = 1
 
@@ -568,7 +569,7 @@ def test_collect_and_apply_season_poster(tmp_path):
 
 
 def test_transferinfo_signature_dedupes_identical_events():
-    """内容相同的事件签名一致，任一字段变化即视为新事件。"""
+    """内容相同的事件签名一致, 任一字段变化即视为新事件."""
     module = _load_plugin()
     signature = module.TransferImageSidecar._transferinfo_signature
 
@@ -581,7 +582,7 @@ def test_transferinfo_signature_dedupes_identical_events():
 
 
 def test_transferinfo_signature_tolerates_unhashable_values():
-    """不可哈希属性回退为字符串，不得让去重逻辑整体中断。"""
+    """不可哈希属性回退为字符串, 不得让去重逻辑整体中断."""
     module = _load_plugin()
     signature = module.TransferImageSidecar._transferinfo_signature
 
