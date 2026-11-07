@@ -55,6 +55,11 @@ uv run pytest -m v2
 - 本地开发环境通常是 Windows，但插件运行于 Linux 容器：换行用 LF，路径分隔符与大小写按 Linux 处理。
 - `package*.json` 是本仓库最大的 diff 敏感文件。只做局部插入/替换，**不要整体格式化或重排键顺序**。
 - `.githooks/pre-push` 与 `.github/workflows/plugin-gate.yml` 会校验索引，改动后本地先跑一次预检再推送。
+- 仓库可能位于 UNC 共享路径上。此时 `uv sync` 只能把 wheel 整份复制进 `.venv`（跨文件系统无法硬链接，安装很慢），而 pyright 会因 Node 无法解析 UNC 模块路径直接报 `EISDIR: lstat 'UNC'` 退出。把虚拟环境指到本地盘可同时解决两者：
+
+  ```powershell
+  $env:UV_PROJECT_ENVIRONMENT = "$env:LOCALAPPDATA\mpp-venv"
+  ```
 
 ## 代码风格
 
