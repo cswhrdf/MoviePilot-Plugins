@@ -6,6 +6,7 @@ chicken-egg：导入主程序共享引导之前，必须先由本仓定位后端
 
 所有引导函数都必须在首次 ``import app.*`` 或导入任一插件包之前调用，否则隔离与路径注入不生效。
 """
+
 from __future__ import annotations
 
 import os

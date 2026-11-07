@@ -4,6 +4,7 @@
 独立子进程运行；CI 工具测试不加载插件运行时。任一组非零退出码即整体失败，无用例的
 分组直接跳过。路径以 __file__ 推导，从任意目录调用均可。
 """
+
 import subprocess
 import sys
 from pathlib import Path

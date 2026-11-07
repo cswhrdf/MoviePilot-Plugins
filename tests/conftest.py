@@ -12,7 +12,9 @@ from pathlib import Path
 
 # 相对导入本仓薄壳，先定位同级 MoviePilot 后端并加入 ``sys.path``，再复用主程序共享引导。
 from ._bootstrap import (
-    block_real_network,  # noqa: F401  导入即注册主程序共享 autouse 网络守卫
+    block_real_network as block_real_network,  # 导入即注册主程序共享 autouse 网络守卫
+)
+from ._bootstrap import (
     prepare_v1_backend,
     prepare_v2_backend,
     prepare_v3_backend,

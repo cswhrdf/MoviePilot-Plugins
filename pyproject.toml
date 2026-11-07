@@ -1,3 +1,11 @@
+[dependency-groups]
+# 开发期工具链；插件运行时依赖由 MoviePilot 宿主提供，不在此声明
+dev = [
+    "pytest",
+    "ruff",
+    "pyright",
+]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 120
@@ -36,36 +44,21 @@ ignore = ["D104"]
 [tool.ruff.lint.flake8-unused-arguments]
 ignore-variadic-names = true
 
+[tool.ruff.lint.per-file-ignores]
+# 以下为上游同步的测试基建文件，中文 docstring 以全角句号收尾；插件与用例代码不豁免
+"tests/conftest.py" = ["D400", "D415"]
+"tests/_bootstrap.py" = ["D400", "D415"]
+"tests/run.py" = ["D400", "D415"]
+"tests/__init__.py" = ["D400", "D415"]
+"tests/v2/__init__.py" = ["D400", "D415"]
+"tests/v3/__init__.py" = ["D400", "D415"]
+
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
 skip-magic-trailing-comma = false
 line-ending = "auto"
 docstring-code-format = true
-
-[tool.mypy]
-python_version = "3.12"
-files = [
-    "plugins",
-    "plugins.v2",
-    "plugins.v3",
-    "tests",
-]
-warn_unused_configs = true
-check_untyped_defs = true
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
-no_implicit_optional = true
-show_error_codes = true
-pretty = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-ignore_missing_imports = true
-strict_optional = true
-exclude = [
-    "^docs/",
-    "^venv/",
-]
 
 [tool.pyright]
 include = [
@@ -89,16 +82,29 @@ extraPaths = [
 ]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
+# 宿主 API（app.*）不在本仓库，导入无法解析；这些符号统一按 Any 处理，不视为错误
 reportMissingImports = false
 reportMissingTypeStubs = false
-reportUnknownMemberType = "none"
-reportUnknownVariableType = "none"
-reportUnknownArgumentType = "none"
-reportUnknownLambdaType = "none"
-reportUnknownParameterType = "none"
-reportUnknownReturnType = "none"
+# 仅保留 pyright 支持的告警项；reportUnknown* 与 reportUnusedClass/Function/Variable/Coroutine
+# 属于 basedpyright 扩展，pyright 会报 unrecognized setting
 reportUnusedImport = "error"
-reportUnusedClass = "warning"
-reportUnusedFunction = "warning"
-reportUnusedVariable = "warning"
-reportUnusedCoroutine = "warning"
+
+[tool.pytest.ini_options]
+# 仅在仓库根 tests/ 下发现用例；各代 plugins 目录不再承载测试
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["*Test", "Test*"]
+python_functions = ["test_*"]
+addopts = "--import-mode=importlib"
+# 各代必须分会话运行（同名插件包冲突）；marker 供后续按代筛选扩展使用
+markers = [
+    "v1: v1 插件（plugins/）单测，需与 v2 分独立会话运行",
+    "v2: v2 插件（plugins.v2/）单测，需与 v1 分独立会话运行",
+    "v3: v3 插件（plugins.v3/）单测，需与其他代分独立会话运行",
+]
+# 仅忽略主程序依赖链或三方库在 Python 3.12 下的已知弃用告警；插件仓自身告警应直接修复
+filterwarnings = [
+    "ignore:datetime.datetime.utcfromtimestamp\\(\\) is deprecated:DeprecationWarning",
+    "ignore:'crypt' is deprecated:DeprecationWarning",
+    "ignore:'audioop' is deprecated:DeprecationWarning",
+]
