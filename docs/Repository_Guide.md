@@ -56,7 +56,8 @@ MoviePilot-Plugins/
 - 目录名必须是插件类名的小写，例如 `class AutoSignIn` 对应目录 `autosignin/`。
 - 插件主类必须定义在该目录的 `__init__.py` 中。
 - 插件目录内可附带：
-  - `requirements.txt`：额外 Python 依赖
+  - `pyproject.toml`：V3 插件的额外 Python 依赖
+  - `requirements.txt`：V1/V2 历史插件的额外 Python 依赖
   - `README.md`：插件专属使用说明
   - `dist/assets/`：Vue 联邦构建产物
   - 其他运行时所需静态文件
@@ -67,7 +68,10 @@ MoviePilot-Plugins/
 
 当前 V3 插件索引文件，对应源码必须放在
 `plugins.v3/<plugin_id_lower>/`。新插件从这里开始；当条目存在 V3 专用副本时，
-旧索引中的同名条目应声明 `"v3": false`，避免 V3 回退到旧合同实现。
+旧索引中的同名条目通常声明 `"v3": false`，避免 V3 回退到不兼容的旧合同实现。
+新版插件依赖后续主程序版本、旧实现仍兼容 V3 时，可显式声明 `"v3": true`，
+保留尚未达到新版最低要求的 V3 主程序选择旧实现的安装入口。
+旧条目同时声明 `system_version` 上界，与新条目的最低主程序版本分开。
 
 ### 3.2 `package.v2.json`
 
@@ -107,7 +111,7 @@ V2 历史插件索引文件。MoviePilot 在 V2 环境下会优先读取这里�
 - `history`：更新日志
 - `release`：是否使用 GitHub Release 压缩包发布
 - `v2`：默认索引中的插件是否兼容 V2
-- `v3`：旧索引中的插件是否允许 V3 回退使用；`false` 表示存在不兼容或已有 V3 专用实现
+- `v3`：旧索引中的插件是否允许 V3 回退使用；不兼容旧实现声明 `false`，新版提高宿主最低要求时可将仍兼容的旧实现显式声明为 `true`
 
 这些字段是“插件市场展示元数据”，而不是运行时唯一真相。真正加载后的插件类仍然需要在代码里声明自己的 `plugin_name`、`plugin_desc`、`plugin_version` 等属性。两者必须同步。
 
@@ -127,7 +131,7 @@ MoviePilot 当前的插件版本选择逻辑可以概括为：
 - 同一个插件若在 `package.v2.json` 中已有专用实现，就不要再依赖 `package.json` 中的兼容声明做“隐式覆盖”。
 - 只有维护历史 V2 插件时，才继续使用 `plugins.v2/` 和 `package.v2.json`。
 - 旧插件确实跨版本共用一套实现时，才使用 `package.json + "v2": true` 的方式。
-- 依赖 V3 新合同的实现必须放入 `plugins.v3/` 并在 `package.v3.json` 声明 `system_version: ">=3.0.0"`。
+- 依赖 V3 新合同的实现必须放入 `plugins.v3/` 并在 `package.v3.json` 声明 `system_version: ">=3.0.0"`；依赖某个 3.x 版本才提供的宿主能力时，把下界提高到该版本，例如 `">=3.0.11"`。
 - 依赖宿主新增能力的插件需要同步声明 `system_version`，否则旧版 MoviePilot 仍可能看到更新入口但安装后无法加载。
 
 涉及媒体识别、搜索、订阅、下载、整理、刮削、媒体库事件、插件自有媒体数据、
@@ -188,10 +192,24 @@ MoviePilot 当前的插件版本选择逻辑可以概括为：
 
 1. 在目标代 `plugins/`、`plugins.v2/` 或 `plugins.v3/` 下新建目录
 2. 在 `__init__.py` 中实现插件类
-3. 如有依赖，增加 `requirements.txt`
+3. 如有依赖，V3 增加 `pyproject.toml`，V1/V2 保留 `requirements.txt`
 4. 在对应代 `package*.json` 中补齐元数据
 5. 如有插件文档，在插件目录补充 `README.md`
 6. 如有 Vue UI，构建后把产物放进 `dist/assets/`
+
+V3 的 `pyproject.toml` 只承载插件依赖：依赖写入 `[project].dependencies`，版本使用
+`dynamic = ["version"]`，真实插件版本仍由插件类和 `package.v3.json` 维护。插件不提交
+`uv.lock`，因为宿主不会按插件锁文件创建独立环境；安装时由 MoviePilot 在共享运行环境中
+统一解析，并保护主程序已锁定的核心依赖。需要额外包索引时使用 `tool.uv.index` 和
+`tool.uv.sources`，不要在插件代码中直接执行 pip 或 uv。
+
+V3 插件通过 `app.sdk.network.AsyncRequestUtils` 发起异步 HTTP 请求时使用 HTTPX2；自管客户端
+使用 `httpx2.AsyncClient`，不得通过 `httpx2.alias_httpx()` 改写进程级导入。第三方 SDK 继续使用
+其自身声明的 HTTP 客户端版本。SDK 默认把 HTTPX2 请求异常转换为 `None`；传入
+`raise_exception=True` 时捕获 `httpx2.RequestError`，HTTP 状态错误仍由插件按业务显式处理。
+
+插件测试统一使用生产命名空间 `app.plugins.<plugin_id>`。测试引导由主程序共享实现暴露
+对应代际源码，插件仓不维护顶层导入兼容层，避免同一源码形成重复模块和重复实例。
 
 ### 6.3 维护版本一致性
 
@@ -258,6 +276,7 @@ yarn dev
 - `get_dashboard()` / `get_dashboard_meta()` 是否正常显示
 - `get_render_mode() == "vue"` 的远程组件是否能成功加载
 - `get_sidebar_nav()` 是否正确出现在前端侧栏
+- `get_agent_pets()` 声明的形象是否出现在智能助手的“更换形象”里并能正常加载
 
 ## 8. 发布流程
 
@@ -266,6 +285,7 @@ yarn dev
 - 任一 `package*.json` 发生变更时，工作流会触发
 - 只有索引条目中声明了 `"release": true` 的插件会参与自动打包
 - 工作流会按索引文件严格映射到 `plugins/`、`plugins.v2/` 或 `plugins.v3/` 查找目录
+- 自动发布分别读取 `package.json`、`package.v2.json` 和 `package.v3.json`；`v3` 兼容标记只影响插件在 V3 中的可用性，不改变历史版本的发布规则
 - Release Tag 格式为 `插件ID_v插件版本号`
 - 压缩包文件名格式为 `插件目录小写_v插件版本号.zip`
 - 若插件目录自上一个 Tag 以来没有变化，则会跳过打包
