@@ -77,17 +77,9 @@ typeCheckingMode = "standard"
 # 宿主 API（app.*）不在本仓库，导入无法解析；这些符号统一按 Any 处理，不视为错误
 reportMissingImports = false
 reportMissingTypeStubs = false
-reportUnknownMemberType = "none"
-reportUnknownVariableType = "none"
-reportUnknownArgumentType = "none"
-reportUnknownLambdaType = "none"
-reportUnknownParameterType = "none"
-reportUnknownReturnType = "none"
+# 仅保留 pyright 支持的告警项；reportUnknown* 与 reportUnusedClass/Function/Variable/Coroutine
+# 属于 basedpyright 扩展，pyright 会报 unrecognized setting
 reportUnusedImport = "error"
-reportUnusedClass = "warning"
-reportUnusedFunction = "warning"
-reportUnusedVariable = "warning"
-reportUnusedCoroutine = "warning"
 
 [dependency-groups]
 # 开发期工具链；插件运行时依赖由 MoviePilot 宿主提供，不在此声明
