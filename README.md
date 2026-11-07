@@ -32,7 +32,7 @@ MoviePilot 插件仓库，目录结构、索引格式与文档体系均沿用
 
 ```text
 MoviePilot-Plugins/
-├── plugins.v3/          # V3 专用插件；当前为空，新插件放这里
+├── plugins.v3/          # V3 专用插件，新插件放这里
 ├── tests/v3/            # V3 插件测试
 ├── plugins.v2/          # V2 插件
 ├── package.v2.json      # V2 插件市场索引
@@ -44,15 +44,17 @@ MoviePilot-Plugins/
 └── .github/             # CI、Release 工作流与校验脚本
 ```
 
-V3 索引 `package.v3.json` 尚未建立。新增 V3 插件时需一并创建该文件，并把插件放进
-`plugins.v3/<plugin_id_lower>/`、测试放进 `tests/v3/<plugin_id_lower>/`。
+V3 添加插件时需同步插件目录、`package.v3.json` 条目与 `tests/v3/<plugin_id_lower>/`；
+旧代索引中的同名条目声明 `"v3": false`，避免 V3 回退到旧合同实现。
 
 ## 插件清单
 
-### [转移图片挂载文件](plugins.v2/transferimagesidecar/README.md)
+### [转移图片挂载文件](plugins.v3/transferimagesidecar/README.md)
 
 在媒体整理/转移完成后，自动同步处理同目录图片与 NFO 文件  
 在转移到目标目录后，继续检查与媒体文件同名的 poster、fanart 以及 .nfo，并按规则整理到目标位置，减少手动补充海报和艺术图的重复工作。
+
+V3 实现位于 `plugins.v3/transferimagesidecar/`；`plugins.v2/transferimagesidecar/` 为历史实现，其索引条目已声明 `"v3": false`。
 
 ## 最重要的提交规则
 

@@ -4,7 +4,7 @@
     "name": "媒体刮削文件转移",
     "description": "转移媒体文件目录下的fanart/poster和nfo,适用与已刮削完成的媒体文件",
     "labels": "transfer,image,fanart,poster,nfo,sidecar",
-    "version": "0.1.2",
+    "version": "0.1.3",
     "icon": "movie.jpg",
     "author": "cswhrdf",
     "level": 50,
