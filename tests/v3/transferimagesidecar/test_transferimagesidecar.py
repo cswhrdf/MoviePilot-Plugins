@@ -159,18 +159,20 @@ def test_get_page_stays_placeholder_so_host_hides_detail_page():
 def test_init_plugin_applies_config():
     """初始化应完整读取配置项."""
     plugin = _make_plugin(_load_plugin())
-    plugin.init_plugin({
-        "enabled": False,
-        "delay_seconds": 45,
-        "enable_first_episode_promotion": False,
-        "media_poster_season": 2,
-        "media_poster_episode": 3,
-        "generate_season_posters": False,
-        "season_poster_episode": 4,
-        "poster_asset_name": "cover",
-        "fanart_asset_name": "backdrop",
-        "nfo_remove_tags": ["genre", "Actor"],
-    })
+    plugin.init_plugin(
+        {
+            "enabled": False,
+            "delay_seconds": 45,
+            "enable_first_episode_promotion": False,
+            "media_poster_season": 2,
+            "media_poster_episode": 3,
+            "generate_season_posters": False,
+            "season_poster_episode": 4,
+            "poster_asset_name": "cover",
+            "fanart_asset_name": "backdrop",
+            "nfo_remove_tags": ["genre", "Actor"],
+        }
+    )
 
     assert plugin.get_state() is False
     assert plugin._delay_seconds == 45

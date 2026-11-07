@@ -36,36 +36,21 @@ ignore = ["D104"]
 [tool.ruff.lint.flake8-unused-arguments]
 ignore-variadic-names = true
 
+[tool.ruff.lint.per-file-ignores]
+# 以下为上游同步的测试基建文件，中文 docstring 以全角句号收尾；插件与用例代码不豁免
+"tests/conftest.py" = ["D400", "D415"]
+"tests/_bootstrap.py" = ["D400", "D415"]
+"tests/run.py" = ["D400", "D415"]
+"tests/__init__.py" = ["D400", "D415"]
+"tests/v2/__init__.py" = ["D400", "D415"]
+"tests/v3/__init__.py" = ["D400", "D415"]
+
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
 skip-magic-trailing-comma = false
 line-ending = "auto"
 docstring-code-format = true
-
-[tool.mypy]
-python_version = "3.12"
-files = [
-    "plugins",
-    "plugins.v2",
-    "plugins.v3",
-    "tests",
-]
-warn_unused_configs = true
-check_untyped_defs = true
-disallow_untyped_defs = false
-disallow_incomplete_defs = false
-no_implicit_optional = true
-show_error_codes = true
-pretty = true
-warn_redundant_casts = true
-warn_unused_ignores = true
-ignore_missing_imports = true
-strict_optional = true
-exclude = [
-    "^docs/",
-    "^venv/",
-]
 
 [tool.pyright]
 include = [
@@ -89,6 +74,7 @@ extraPaths = [
 ]
 pythonVersion = "3.12"
 typeCheckingMode = "standard"
+# 宿主 API（app.*）不在本仓库，导入无法解析；这些符号统一按 Any 处理，不视为错误
 reportMissingImports = false
 reportMissingTypeStubs = false
 reportUnknownMemberType = "none"
@@ -102,6 +88,14 @@ reportUnusedClass = "warning"
 reportUnusedFunction = "warning"
 reportUnusedVariable = "warning"
 reportUnusedCoroutine = "warning"
+
+[dependency-groups]
+# 开发期工具链；插件运行时依赖由 MoviePilot 宿主提供，不在此声明
+dev = [
+    "pytest",
+    "ruff",
+    "pyright",
+]
 
 [tool.pytest.ini_options]
 # 仅在仓库根 tests/ 下发现用例；各代 plugins 目录不再承载测试

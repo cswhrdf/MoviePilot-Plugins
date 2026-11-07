@@ -45,7 +45,7 @@ MoviePilot 插件仓库。本文件只写**从代码里看不出来、但容易�
 各代必须在**独立会话**中运行，否则同名插件包会冲突：
 
 ```powershell
-pytest -m v2
+uv run pytest -m v2
 ```
 
 `[tool.pytest.ini_options]` 中保留的 `filterwarnings` 只针对主程序依赖链和三方库；插件自身产生的告警应去修代码，不要往白名单里加。
@@ -63,6 +63,9 @@ pytest -m v2
 - `D` 组只认 ASCII 句末标点：中文 docstring 首行必须以 `.` 结尾，写成全角 `。` 会报 `D400`/`D415`（仓库现有插件源码就是这个写法，可参照 `plugins.v2/`）。
 - 不要用 `ruff check --fix --unsafe-fixes` 修 `D400`/`D415`，它会在 `。` 后再补一个 `.`，产出 `。.`；按上一条规则手改。
 - 超长字符串用括号隐式拼接分行，避免 `E501`。
+- 工具链在 `pyproject.toml` 的 `[dependency-groups] dev` 里（`pytest`/`ruff`/`pyright`），用 `uv sync` 安装；不要用编辑器扩展自带的 ruff，版本可能和 `uv.lock` 不一致。
+- 提交前至少跑：`uv run ruff check .`、`uv run ruff format --check .`、`uv run pyright`。`.github/workflows/lint.yml` 会在 PR 上重跑同样的命令。
+- 类型检查用 pyright。宿主 API（`app.*`）不在本仓库，`reportMissingImports` 已关闭，导入的宿主符号一律视为 `Any`；不要为了消除 `Unknown` 去造假 stub 或强转类型。
 
 ## 文档写作
 
