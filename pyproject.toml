@@ -1,3 +1,11 @@
+[dependency-groups]
+# 开发期工具链；插件运行时依赖由 MoviePilot 宿主提供，不在此声明
+dev = [
+    "pytest",
+    "ruff",
+    "pyright",
+]
+
 [tool.ruff]
 target-version = "py312"
 line-length = 120
@@ -80,14 +88,6 @@ reportMissingTypeStubs = false
 # 仅保留 pyright 支持的告警项；reportUnknown* 与 reportUnusedClass/Function/Variable/Coroutine
 # 属于 basedpyright 扩展，pyright 会报 unrecognized setting
 reportUnusedImport = "error"
-
-[dependency-groups]
-# 开发期工具链；插件运行时依赖由 MoviePilot 宿主提供，不在此声明
-dev = [
-    "pytest",
-    "ruff",
-    "pyright",
-]
 
 [tool.pytest.ini_options]
 # 仅在仓库根 tests/ 下发现用例；各代 plugins 目录不再承载测试
