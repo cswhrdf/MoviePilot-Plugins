@@ -8,6 +8,10 @@
 
 在媒体整理/转移完成后，自动同步处理同目录图片与 NFO 文件；转移到目标目录后，继续检查与媒体文件同名的 poster、fanart 以及 .nfo，并按规则整理到目标位置，减少手动补充海报和艺术图的重复工作。
 
+### [订阅下载分类与标签](plugins.v3/subscribedownloadattr/README.md)
+
+订阅触发自动下载时，按订阅目录规则为下载任务写入下载器的分类与标签；标签支持 qBittorrent、Transmission、rTorrent，分类仅 qBittorrent，并提供 dry_run 预演、7 天去重与处理记录详情页。
+
 ## 作为插件市场使用
 
 在 MoviePilot 的 `PLUGIN_MARKET` 中填入本仓库地址：

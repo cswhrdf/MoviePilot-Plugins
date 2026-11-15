@@ -11,5 +11,18 @@
     "history": {
       "1.0.0": "V3 专用实现：宿主接口改用 app.sdk 稳定入口；修复媒体海报转移开关未生效；配置重载与停用时释放延迟任务；NFO 删除标签改为多选 chips 并兼容旧配置"
     }
+  },
+  "SubscribeDownloadAttr": {
+    "name": "订阅下载分类与标签",
+    "description": "订阅自动下载时按目录规则为下载任务写入下载器分类与标签",
+    "labels": "download,subscribe,category,tag",
+    "version": "0.1.0",
+    "icon": "directory.png",
+    "author": "cswhrdf",
+    "level": 1,
+    "system_version": ">=3.2.0",
+    "history": {
+      "0.1.0": "初始版本：监听 DownloadAdded，按订阅目录规则为下载任务写入下载器分类与标签，含 dry_run 预演、7 天去重、处理记录与详情页"
+    }
   }
 }
