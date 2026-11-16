@@ -1,13 +1,15 @@
-"""规则纯逻辑层：目录键、配置规范化、三级匹配与标签合并.
+"""规则纯逻辑层：目录键、配置规范化、两级匹配与标签合并.
 
 本模块只做纯计算：不导入任何宿主模块（``app.*``）、不引入第三方依赖、不读写配置或
 下载器，便于配置页、事件处理与单测共用同一套目录键与匹配实现。所有公开入口对错误
 输入都降级处理，不向上抛异常；坏条目的原因写入 ``issues``，由配置页展示。
+
+两级匹配顺序为「目录 → 默认」：目录键命中目录规则时停在目录级（包括空规则），
+目录未命中时使用默认规则。
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -24,7 +26,7 @@ __all__ = [
 # 系统标签默认值；P0-04 会把 settings.TORRENT_TAG 显式传入，纯逻辑层不读取设置
 DEFAULT_SYSTEM_TAG = "MOVIEPILOT"
 
-# 规范化后配置的九个键，顺序与配置模型（第 5.1 节）一致
+# 规范化后配置的八个键，顺序与配置模型（第 5.1 节）一致
 CONFIG_KEYS = (
     "enabled",
     "trigger",
@@ -34,7 +36,6 @@ CONFIG_KEYS = (
     "dry_run",
     "default_rule",
     "directory_rules",
-    "category_rules",
 )
 
 _TRIGGERS = ("subscribe", "all")
@@ -328,70 +329,98 @@ def _directory_rules_field(raw: Mapping[str, Any], issues: list[str]) -> dict[st
     return rules
 
 
-def _optional_text(raw: Mapping[str, Any], key: str, label: str, issues: list[str]) -> str:
-    """读取可选匹配字段, None 视为不限, 非字符串记 issue 后按不限处理."""
-    value = raw.get(key)
+_DEFAULT_RULE_FLAT_PREFIX = "default_rule."
+_DIRECTORY_RULES_FLAT_PREFIX = "directory_rules."
+_RULE_FIELDS = ("category", "tags")
+
+
+def _is_empty_rule_value(value: Any) -> bool:
+    """判断规则字段是否为空值：None、空串与空序列都视为空."""
     if value is None:
-        return ""
+        return True
     if isinstance(value, str):
-        return value.strip()
-    issues.append(f"{label}.{key} 应为字符串，实际为 {type(value).__name__}，已按不限处理")
-    return ""
+        return not value.strip()
+    if isinstance(value, (list, tuple, set, frozenset)):
+        return not value
+    return False
 
 
-def _category_rule(value: Any, index: int, issues: list[str]) -> dict[str, Any] | None:
-    """把单条「目录 + 媒体类别」规则规范为普通 dict, 非法条目返回 None."""
-    label = f"category_rules 第 {index} 条"
-    if not isinstance(value, Mapping):
-        issues.append(f"{label} 应为对象，实际为 {type(value).__name__}，已跳过")
-        return None
-    directory = value.get("directory")
-    if not isinstance(directory, str) or not directory.strip():
-        issues.append(f"{label} 缺少有效的 directory 目录键，已跳过")
-        return None
-    return {
-        "directory": directory.strip(),
-        "media_type": _optional_text(value, "media_type", label, issues),
-        "media_category": _optional_text(value, "media_category", label, issues),
-        "category": _optional_text(value, "category", label, issues),
-        "tags": _coerce_tags(value.get("tags"), f"{label}.tags", issues),
-    }
+def _pop_flat_rules(raw: dict[str, Any], issues: list[str]) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    """摘除点号扁平键, 返回 (默认规则字段, 目录规则字段) 并就地删除扁平键."""
+    flat_default: dict[str, Any] = {}
+    flat_directory: dict[str, dict[str, Any]] = {}
+    for key in list(raw):
+        if not isinstance(key, str):
+            continue
+        if key.startswith(_DEFAULT_RULE_FLAT_PREFIX):
+            field = key[len(_DEFAULT_RULE_FLAT_PREFIX) :]
+            if field in _RULE_FIELDS:
+                flat_default[field] = raw[key]
+            else:
+                issues.append(f"配置项 {key!r} 不是受支持的默认规则字段，已忽略")
+            del raw[key]
+        elif key.startswith(_DIRECTORY_RULES_FLAT_PREFIX):
+            remainder = key[len(_DIRECTORY_RULES_FLAT_PREFIX) :]
+            head, sep, field = remainder.rpartition(".")
+            if sep and head and field in _RULE_FIELDS:
+                flat_directory.setdefault(head, {})[field] = raw[key]
+            else:
+                issues.append(f"配置项 {key!r} 不是受支持的目录规则字段，已忽略")
+            del raw[key]
+    return flat_default, flat_directory
 
 
-def _parse_category_rules(value: Any, issues: list[str]) -> list[Any]:
-    """把 list 或 JSON 字符串输入解析为列表, 非法结构返回空列表."""
-    if value is None:
-        return []
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return []
-        try:
-            parsed = json.loads(text)
-        except (TypeError, ValueError) as err:
-            issues.append(f"配置项 category_rules 不是合法 JSON（{err}），已按空列表处理")
-            return []
-        value = parsed
-    if not isinstance(value, list):
-        issues.append(f"配置项 category_rules 应为列表，实际为 {type(value).__name__}，已按空列表处理")
-        return []
-    return value
+def _merge_default_rule(nested: Any, flat: Mapping[str, Any], issues: list[str]) -> Any:
+    """把扁平默认规则字段合并进嵌套默认规则, 嵌套字段非空时以嵌套为准."""
+    if not isinstance(nested, Mapping):
+        return dict(flat)
+    merged = dict(nested)
+    for field, value in flat.items():
+        current = merged.get(field)
+        if _is_empty_rule_value(current):
+            merged[field] = value
+        elif not _is_empty_rule_value(value):
+            issues.append(f"配置项 default_rule.{field} 在嵌套与扁平两处都有值，已以嵌套为准")
+    return merged
 
 
-def _category_rules_field(raw: Mapping[str, Any], issues: list[str]) -> list[dict[str, Any]]:
-    """读取「目录 + 媒体类别」规则列表, 非法条目跳过并记录原因."""
-    if "category_rules" not in raw:
-        return []
-    rules: list[dict[str, Any]] = []
-    for index, value in enumerate(_parse_category_rules(raw["category_rules"], issues), 1):
-        rule = _category_rule(value, index, issues)
-        if rule is not None:
-            rules.append(rule)
-    return rules
+def _merge_directory_rules(nested: Any, flat: Mapping[str, dict[str, Any]], issues: list[str]) -> Any:
+    """把扁平目录规则合并进嵌套目录规则, 同键以嵌套为准并记 issue."""
+    if not isinstance(nested, Mapping):
+        return dict(flat)
+    merged = dict(nested)
+    for dir_key, rule in flat.items():
+        if dir_key in merged:
+            issues.append(f"目录规则 {dir_key!r} 在嵌套与扁平两处都有值，已以嵌套为准")
+        else:
+            merged[dir_key] = rule
+    return merged
+
+
+def _expand_flat_config(raw: Mapping[str, Any], issues: list[str]) -> dict[str, Any]:
+    """把点号扁平配置键还原为嵌套的 default_rule 与 directory_rules.
+
+    宿主保存表单时可能把 ``default_rule.category`` / ``default_rule.tags`` /
+    ``directory_rules.<目录键>.category`` / ``directory_rules.<目录键>.tags`` 存成
+    顶层扁平键。目录键本身可含 ``.`` / ``:`` / ``/``，因此目录规则按「最后一个 ``.``
+    之前为目录键、其后为字段名」拆分；字段名只接受 ``category`` / ``tags``。
+
+    展开后扁平键不再保留；同一目录键在嵌套与扁平两处都存在时以嵌套为准并记一条
+    issue；默认规则按字段合并，嵌套字段为空时由扁平值补入，两处都有值且不一致时
+    以嵌套为准并记 issue。
+
+    """
+    result = dict(raw)
+    flat_default, flat_directory = _pop_flat_rules(result, issues)
+    if flat_default:
+        result["default_rule"] = _merge_default_rule(result.get("default_rule"), flat_default, issues)
+    if flat_directory:
+        result["directory_rules"] = _merge_directory_rules(result.get("directory_rules"), flat_directory, issues)
+    return result
 
 
 def normalize_config(config: Any) -> tuple[dict[str, Any], list[str]]:
-    """把任意输入规范化为九个配置键与问题列表.
+    """把任意输入规范化为八个配置键与问题列表.
 
     Args:
         config: 插件原始配置, 支持 dict 与 None；字符串、列表等非对象类型按空配置处理.
@@ -399,10 +428,14 @@ def normalize_config(config: Any) -> tuple[dict[str, Any], list[str]]:
     Returns:
         ``(normalized, issues)`` 二元组. ``normalized`` 的键集合与配置模型一致且可
         ``json.dumps``；坏条目、被跳过条目的原因只写入 ``issues``, 不混入 ``normalized``.
+        宿主持久化的点号扁平键会先还原为嵌套结构再校验；旧配置里的 ``category_rules``
+        不再使用, 只记一条提示, 不会成为配置键.
 
     """
     issues: list[str] = []
-    raw = _config_mapping(config, issues)
+    raw = _expand_flat_config(_config_mapping(config, issues), issues)
+    if "category_rules" in raw:
+        issues.append("配置项 category_rules 已不再使用（目录规则直接读取系统目录），本次已忽略")
     normalized: dict[str, Any] = {
         "enabled": _bool_field(raw, "enabled", True, issues),
         "trigger": _trigger_field(raw, issues),
@@ -412,7 +445,6 @@ def normalize_config(config: Any) -> tuple[dict[str, Any], list[str]]:
         "dry_run": _bool_field(raw, "dry_run", False, issues),
         "default_rule": _rule_field(raw, "default_rule", issues),
         "directory_rules": _directory_rules_field(raw, issues),
-        "category_rules": _category_rules_field(raw, issues),
     }
     return normalized, issues
 
@@ -420,53 +452,34 @@ def normalize_config(config: Any) -> tuple[dict[str, Any], list[str]]:
 # ---------------- 规则匹配 ----------------
 
 
-def _media_snapshot(media: Any) -> tuple[str, str]:
-    """读取媒体快照的 ``media_type`` / ``media_category`` 字段."""
-    return (
-        _plain_text(_read_value(media, "media_type")),
-        _plain_text(_read_value(media, "media_category")),
-    )
-
-
-def _match_result(level: str, rule: Mapping[str, Any], index: int | None = None) -> dict[str, Any]:
+def _match_result(level: str, rule: Mapping[str, Any]) -> dict[str, Any]:
     """构造匹配结果：命中层级、规则副本与是否含有效内容."""
     copied = {"category": _plain_text(rule.get("category")), "tags": list(rule.get("tags") or [])}
     return {
         "level": level,
         "matched": bool(copied["category"] or copied["tags"]),
         "rule": copied,
-        "rule_index": index,
+        "rule_index": None,
     }
 
 
-def match_rule(config: Any, directory_key: str | None = None, media: Any = None) -> dict[str, Any]:
-    """按「目录+类别 → 目录 → 默认」三级顺序匹配规则.
+def match_rule(config: Any, directory_key: str | None = None) -> dict[str, Any]:
+    """按「目录 → 默认」两级顺序匹配规则.
 
     Args:
         config: 插件配置, 可以是 ``normalize_config`` 的结果或原始 dict.
-        directory_key: 目录键, 为空时跳过前两级、直接使用默认规则.
-        media: 媒体快照, 使用普通 dict 的 ``media_type`` / ``media_category`` 字段；
-            缺失或空串表示该维度不参与限制.
+        directory_key: 目录键, 为空时跳过目录级、直接使用默认规则.
 
     Returns:
-        含 ``level``（``category`` / ``directory`` / ``default``）、``matched``、
-        ``rule``、``rule_index`` 的普通 dict. 命中空规则仍停在对应层级, 不向下一级
-        逐字段回落.
+        含 ``level``（``directory`` / ``default``）、``matched``、``rule``、
+        ``rule_index`` 的普通 dict；``rule_index`` 保留字段以兼容记录结构, 两级匹配均
+        固定为 None. 命中空规则仍停在目录级, 不向默认规则逐字段回落.
 
     """
     normalized, _ = normalize_config(config)
     key = _text(directory_key)
-    media_type, media_category = _media_snapshot(media)
 
     if key is not None:
-        for index, rule in enumerate(normalized["category_rules"], 1):
-            if rule["directory"] != key:
-                continue
-            if rule["media_type"] and rule["media_type"] != media_type:
-                continue
-            if rule["media_category"] and rule["media_category"] != media_category:
-                continue
-            return _match_result("category", rule, index)
         directory_rule = normalized["directory_rules"].get(key)
         if directory_rule is not None:
             return _match_result("directory", directory_rule)

@@ -32,18 +32,17 @@ CLASS_NAME = "SubscribeDownloadAttr"
 # 基类在本版宿主上的全部抽象方法；补齐后 __abstractmethods__ 才为空
 ABSTRACT_METHODS = {"init_plugin", "get_state", "get_api", "get_form", "get_page", "stop_service"}
 LEGACY_MODULE_PREFIXES = ("app.core.", "app.helper.", "app.utils.", "app.sdk._legacy")
-# 允许的宿主导入：稳定面 + 已评审接受的 DirectoryHelper 例外依赖（不在 app.sdk 稳定面）
 ALLOWED_APP_IMPORTS = {
-    "app.sdk.plugin",
-    "app.sdk.config",
-    "app.sdk.logging",
-    "app.sdk.events",
+    "app.application.directory",
     "app.schemas.system",
     "app.schemas.types",
-    "app.application.directory",
+    "app.sdk.config",
+    "app.sdk.events",
+    "app.sdk.logging",
+    "app.sdk.plugin",
 }
 
-# 配置规范化后的九个键（与规则模型一致）
+# 配置规范化后的八个键（与规则模型一致）
 EXPECTED_CONFIG_KEYS = (
     "enabled",
     "trigger",
@@ -53,7 +52,6 @@ EXPECTED_CONFIG_KEYS = (
     "dry_run",
     "default_rule",
     "directory_rules",
-    "category_rules",
 )
 
 
@@ -133,9 +131,12 @@ def _form_models(form: Any) -> list[str]:
 
 
 def _form_text(form: Any) -> str:
-    """汇总表单所有可读文本（text/title/hint/label）, 用于断言提示与说明可见."""
+    """汇总表单所有可读文本（节点 text 与 props 的 text/title/hint/label）."""
     parts: list[str] = []
     for node in _walk_form(form):
+        node_text = node.get("text")
+        if isinstance(node_text, str):
+            parts.append(node_text)
         props = node.get("props")
         if not isinstance(props, dict):
             continue
@@ -144,6 +145,28 @@ def _form_text(form: Any) -> str:
             if isinstance(value, str):
                 parts.append(value)
     return "\n".join(parts)
+
+
+def _form_row_containing(form: Any, target: dict[str, Any]) -> dict[str, Any] | None:
+    """返回包住目标组件节点的 VRow（按身份判定）, 找不到返回 None."""
+    for row in _form_components(form, "VRow"):
+        if any(node is target for node in _walk_form(row.get("content") or [])):
+            return row
+    return None
+
+
+def _form_component_by_model(form: Any, model: str) -> dict[str, Any]:
+    """按 model 绑定路径取首个组件节点, 不存在直接失败."""
+    for node in _walk_form(form):
+        props = node.get("props")
+        if isinstance(props, dict) and props.get("model") == model:
+            return node
+    raise AssertionError(f"表单中不存在绑定 {model} 的组件")
+
+
+def _row_column_props(row: dict[str, Any]) -> list[dict[str, Any]]:
+    """返回一行内直接子组件的 props, 用于断言栅格宽度."""
+    return [column["props"] for column in row.get("content") or ()]
 
 
 # ---------------- 基类合同与元数据 ----------------
@@ -230,7 +253,7 @@ def test_init_plugin_normalizes_config():
 
 
 def test_init_plugin_reports_config_issues():
-    """非法配置不抛异常, 原因进 config_issues 且运行态仍是九个键."""
+    """非法配置不抛异常, 原因进 config_issues 且运行态仍是八个键."""
     plugin = _make_plugin()
 
     plugin.init_plugin({"dry_run": "not-a-bool", "trigger": "manual"})
@@ -285,14 +308,14 @@ def test_get_command_empty():
 
 
 def test_get_api_empty_skeleton():
-    """API 列表仅空骨架有效, P1 落地真实 API 时移除空返回并改写本用例."""
+    """get_api 保持已实现的空列表骨架: 不注册任何插件 API."""
     plugin = _make_plugin()
 
     assert plugin.get_api() == []
 
 
 def test_get_form_structure():
-    """get_form 返回完整表单与九键默认模型, 基础区/默认规则/JSON 文本域组件与 props 明确."""
+    """get_form 返回完整表单与八键默认模型, 基础区/默认规则组件与 props 明确."""
     plugin = _make_plugin()
 
     form, model = plugin.get_form()
@@ -304,17 +327,17 @@ def test_get_form_structure():
     assert json.loads(json.dumps(model)) == model
     assert model["default_rule"] == {"category": "", "tags": []}
     assert model["directory_rules"] == {}
-    assert model["category_rules"] == "[]"
 
     models = _form_models(form)
     for key in ("enabled", "trigger", "apply_tags", "apply_category", "keep_system_tag", "dry_run"):
         assert key in models
     assert "default_rule.category" in models
     assert "default_rule.tags" in models
-    assert "category_rules" in models
-    # 表单 model 根键与九键契约对应（无目录行时不存在 directory_rules 绑定路径）
+    # 表单 model 根键与八键契约对应（无目录行时不存在 directory_rules 绑定路径）
     assert {path.split(".", 1)[0] for path in models} == set(EXPECTED_CONFIG_KEYS) - {"directory_rules"}
     assert len(models) == len(set(models))
+    # 已移除的「目录 + 媒体类别」不再提供任何文本域录入入口
+    assert _form_components(form, "VTextarea") == []
 
     switches = {node["props"]["model"]: node["props"] for node in _form_components(form, "VSwitch")}
     assert set(switches) == {"enabled", "dry_run", "apply_tags", "apply_category", "keep_system_tag"}
@@ -336,13 +359,6 @@ def test_get_form_structure():
     assert texts["default_rule.category"]["label"] == "默认分类"
     assert "不修改任务分类" in texts["default_rule.category"]["hint"]
 
-    areas = [node["props"] for node in _form_components(form, "VTextarea")]
-    assert [props["model"] for props in areas] == ["category_rules"]
-    assert areas[0]["rows"] == 10
-    assert areas[0]["auto-grow"] is True
-    assert "directory" in areas[0]["hint"] and "JSON" in areas[0]["hint"]
-    assert "tags" in areas[0]["hint"]
-
 
 def test_form_roundtrip(monkeypatch):
     """默认模型与规范化配置同构, 原样保存后重新初始化得到等价的规范化配置."""
@@ -356,9 +372,6 @@ def test_form_roundtrip(monkeypatch):
         "dry_run": True,
         "default_rule": {"category": "默认", "tags": "默认, hd"},
         "directory_rules": {"/mnt/media:/tv": {"category": "电视剧", "tags": ["tv"]}},
-        "category_rules": [
-            {"directory": "/mnt/media:/tv", "media_type": "电视剧", "media_category": "动画", "category": "anime"}
-        ],
     }
     normalized_initial, initial_issues = module.normalize_config(initial)
     assert initial_issues == []
@@ -373,13 +386,10 @@ def test_form_roundtrip(monkeypatch):
     assert model["default_rule"]["tags"] == ["默认", "hd"]
     assert isinstance(model["default_rule"]["tags"], list)
     assert model["directory_rules"] == normalized_initial["directory_rules"]
-    assert isinstance(model["category_rules"], str)
-    # 运行期是 list 时按 json.dumps(..., ensure_ascii=False, indent=2) 回填为多行字符串
-    assert "\n" in model["category_rules"]
-    assert json.loads(model["category_rules"]) == normalized_initial["category_rules"]
+    assert "category_rules" not in model
     assert _form_models(form)
 
-    # 保存即把页面模型原样回写; category_rules 原始类型不同, 规范化后必须相等
+    # 保存即把页面模型原样回写, 规范化后必须相等
     saved = copy.deepcopy(model)
     saved_issues: list[str] = []
     normalized_saved, saved_issues = module.normalize_config(saved)
@@ -394,64 +404,49 @@ def test_form_roundtrip(monkeypatch):
     assert fresh._config == normalized_initial
     assert fresh.config_issues == ()
 
-    # 保存后的 category_rules 仍能在第二级（目录 + 媒体类别）命中
-    matched = module.match_rule(
-        saved,
-        directory_key="/mnt/media:/tv",
-        media={"media_type": "电视剧", "media_category": "动画"},
-    )
-    assert matched["level"] == "category"
-    assert matched["rule"]["category"] == "anime"
-    assert matched["rule_index"] == 1
+    # 保存后的目录规则仍能在目录级命中
+    matched = module.match_rule(saved, directory_key="/mnt/media:/tv")
+    assert matched["level"] == "directory"
+    assert matched["rule"]["category"] == "电视剧"
+    assert matched["rule_index"] is None
 
 
-def test_category_rules_form_roundtrip(monkeypatch):
-    """category_rules 用 VTextarea 绑定 JSON 字符串, 合法原文稳定回填, 非法 JSON 只提示不抛."""
+def test_legacy_category_rules_config_ignored(monkeypatch):
+    """旧配置的 category_rules 被忽略: 无文本域录入, 页面提示可见, 其余配置照常回填."""
+    module = _load_plugin()
     _, plugin, _, _ = _prepare(monkeypatch, directories=[_directory("电视剧", "/mnt/media", "/tv", 0)])
-    text = json.dumps(
-        [
-            {"directory": "/mnt/media:/tv", "media_type": "电视剧", "category": "anime", "tags": ["anime"]},
-            {"media_type": "电影", "category": "无目录键"},
-        ],
-        ensure_ascii=False,
-        indent=2,
-    )
     plugin.init_plugin(
         {
             "enabled": False,
             "directory_rules": {"/mnt/media:/tv": {"category": "电视剧"}},
-            "category_rules": text,
+            "category_rules": [
+                {"directory": "/mnt/media:/tv", "media_type": "电视剧", "category": "anime", "tags": ["anime"]}
+            ],
+            "dry_run": True,
         }
     )
-    assert plugin.config_issues
-    assert any("缺少有效的 directory" in issue for issue in plugin.config_issues)
+
+    assert any("category_rules" in issue and "不再使用" in issue for issue in plugin.config_issues)
 
     form, model = plugin.get_form()
 
-    assert [node["props"]["model"] for node in _form_components(form, "VTextarea")] == ["category_rules"]
-    assert model["category_rules"] == text
+    assert _form_components(form, "VTextarea") == []
+    assert "category_rules" not in model
+    assert tuple(model) == EXPECTED_CONFIG_KEYS
     assert model["enabled"] is False
+    assert model["dry_run"] is True
     assert model["directory_rules"] == {"/mnt/media:/tv": {"category": "电视剧", "tags": []}}
     page_text = _form_text(form)
     assert "配置提示" in page_text
-    assert "缺少有效的 directory" in page_text
+    assert "category_rules" in page_text and "不再使用" in page_text
+    assert json.loads(json.dumps(form)) == form
+    assert json.loads(json.dumps(model)) == model
 
-    # 合法 JSON 原文保存后再取表单, 回填内容稳定
-    stable_plugin = object.__new__(_load_plugin().SubscribeDownloadAttr)
-    stable_plugin.systemconfig = _FakeSystemConfig([_directory("电视剧", "/mnt/media", "/tv", 0)])
-    stable_plugin.init_plugin(copy.deepcopy(model))
-    _, stable_model = stable_plugin.get_form()
-    assert stable_model["category_rules"] == text
-
-    # 非法 JSON 时 get_form/init_plugin 都不抛, 原文保留供编辑, 其余配置不丢
-    plugin.init_plugin({"enabled": False, "category_rules": "{not json", "dry_run": True})
-    invalid_form, invalid_model = plugin.get_form()
-    assert invalid_model["category_rules"] == "{not json"
-    assert invalid_model["dry_run"] is True
-    assert any("不是合法 JSON" in issue for issue in plugin.config_issues)
-    assert "不是合法 JSON" in _form_text(invalid_form)
-    assert json.loads(json.dumps(invalid_form)) == invalid_form
-    assert json.loads(json.dumps(invalid_model)) == invalid_model
+    # 页面模型回写后旧键消失, 再次初始化不再产生该提示
+    saved, saved_issues = module.normalize_config(copy.deepcopy(model))
+    assert saved_issues == []
+    assert "category_rules" not in saved
+    assert "anime" not in json.dumps(saved, ensure_ascii=False)
 
 
 def test_form_directory_rows_follow_host_config(monkeypatch):
@@ -485,7 +480,7 @@ def test_form_directory_rows_follow_host_config(monkeypatch):
     # 重复键的非生效项不重复渲染编辑入口, 避免静默覆盖首条
     assert models.count("directory_rules./mnt/media:/tv.category") == 1
     assert models.count("directory_rules./mnt/media:/tv.tags") == 1
-    # 有目录行时九个配置键全部有 model 绑定, 且每个路径只渲染一次
+    # 有目录行时八个配置键全部有 model 绑定, 且每个路径只渲染一次
     assert {path.split(".", 1)[0] for path in models} == set(EXPECTED_CONFIG_KEYS)
     assert len(models) == len(set(models))
 
@@ -495,23 +490,134 @@ def test_form_directory_rows_follow_host_config(monkeypatch):
         if isinstance(node["props"].get("text"), str) and node["props"]["text"].startswith("目录 #")
     ]
     assert [text.split("：", 1)[0] for text in directory_rows] == ["目录 #1", "目录 #2", "目录 #3"]
-    assert "电影" in directory_rows[0] and "/mnt/media:/movie" in directory_rows[0]
-    assert "priority：1" in directory_rows[0]
-    assert "media_type/media_category：-" in directory_rows[0]
-    assert "电视剧" in directory_rows[1] and "/mnt/media:/tv" in directory_rows[1]
-    assert "priority：5" in directory_rows[1]
-    assert "media_type/media_category：电影/动画" in directory_rows[2]
-    assert "priority：9" in directory_rows[2]
+    # 说明行只保留目录名、媒体类型/类别（有值才显示）与下载路径
+    assert directory_rows[0] == "目录 #1：电影｜下载路径：/mnt/media:/movie"
+    assert directory_rows[1] == "目录 #2：电视剧｜下载路径：/mnt/media:/tv"
+    assert directory_rows[2] == "目录 #3：电视剧副本｜电影 / 动画｜下载路径：/mnt/media:/tv"
+    for text in directory_rows:
+        for jargon in ("storage/download_path", "media_type/media_category", "priority", "匹配标识", "/-"):
+            assert jargon not in text
 
     page_text = _form_text(form)
-    assert "规则键 /mnt/media:/tv 不生效" in page_text
-    assert "目录键冲突" in page_text
-    assert "priority 升序首条" in page_text
+    # 冲突提示用目录名说明, 不再出现内部键拼出的旧标题与术语
+    assert "目录规则不生效" in page_text
+    assert "规则键 /mnt/media:/tv 不生效" not in page_text
+    assert "目录规则冲突" in page_text
+    assert "目录键冲突" not in page_text
+    assert "“电视剧”和“电视剧副本”对应同一目录规则" in page_text
+    assert "当前“电视剧副本”不生效" in page_text
+    assert "完整键" not in page_text
 
     # 默认模型只保留配置里真实存在的规则, 不因重复行重复键或额外造键
     assert model["directory_rules"] == {"/mnt/media:/tv": {"category": "电视剧", "tags": ["tv"]}}
     assert json.loads(json.dumps(form)) == form
     assert json.loads(json.dumps(model)) == model
+
+
+def test_form_directory_row_separates_description_and_inputs(monkeypatch):
+    """目录说明独占整行, 输入另起一行: 说明列 cols/md=12, 分类 4/标签 8, 失效键整行警告且无输入.
+
+    同时校验输入提示面向用户, 不暴露内部匹配标识与目录 path。
+    """
+    _, plugin, _, _ = _prepare(
+        monkeypatch,
+        directories=[
+            _directory("电视剧", "/mnt/media", "/tv", 5),
+            _directory("电影", "/mnt/media", "/movie", 1),
+            {
+                "name": "电视剧副本",
+                "storage": "/mnt/media",
+                "download_path": "/tv",
+                "priority": 9,
+                "media_type": "电影",
+                "media_category": "动画",
+            },
+        ],
+    )
+    plugin.init_plugin({})
+
+    form, _ = plugin.get_form()
+    assert json.loads(json.dumps(form)) == form
+    content = form[0]["content"]
+
+    def row_index(row: dict[str, Any]) -> int:
+        """返回组件行在 VForm 直属 content 中的位置（按身份判定）."""
+        return next(index for index, item in enumerate(content) if item is row)
+
+    descriptions = [
+        node
+        for node in _form_components(form, "VAlert")
+        if isinstance(node["props"].get("text"), str) and node["props"]["text"].startswith("目录 #")
+    ]
+    assert [node["props"]["text"].split("：", 1)[0] for node in descriptions] == ["目录 #1", "目录 #2", "目录 #3"]
+    # 说明行只讲用户能看到的目录名与下载路径, 不暴露内部匹配标识、priority 或宿主字段名
+    for node in descriptions:
+        text = node["props"]["text"]
+        assert "匹配标识" not in text
+        assert "priority" not in text
+        assert "storage/download_path" not in text
+        assert "media_type/media_category" not in text
+        assert "下载路径：" in text
+        assert "规则键" not in text
+
+    # 每条说明独占一行: 该行只有一个整行 VCol 包裹说明 VAlert, 不夹带任何输入控件
+    description_rows: list[dict[str, Any]] = []
+    for node in descriptions:
+        row = _form_row_containing(form, node)
+        assert row is not None
+        assert row["content"] == [{"component": "VCol", "props": {"cols": 12, "md": 12}, "content": [node]}]
+        description_rows.append(row)
+
+    # 生效目录: 分类/标签落在同一输入行, 与说明行相邻且宽度 4/8, model 绑定不变
+    category = _form_component_by_model(form, "directory_rules./mnt/media:/tv.category")
+    tags = _form_component_by_model(form, "directory_rules./mnt/media:/tv.tags")
+    assert category["component"] == "VTextField"
+    assert tags["component"] == "VCombobox"
+    # 输入提示可直接操作, 且不含内部匹配标识/内部 path, 也不承诺移动下载目录
+    category_hint = category["props"]["hint"]
+    tags_hint = tags["props"]["hint"]
+    assert "qBittorrent 分类名称" in category_hint
+    assert "留空则不修改分类" in category_hint
+    assert "留空则不修改标签" in tags_hint
+    for hint in (category_hint, tags_hint):
+        assert "规则键" not in hint
+        assert "/mnt/media" not in hint
+        assert "移动" not in hint
+    input_row = _form_row_containing(form, category)
+    assert input_row is not None
+    assert input_row is _form_row_containing(form, tags)
+    assert _row_column_props(input_row) == [{"cols": 12, "md": 4}, {"cols": 12, "md": 8}]
+    assert [column["content"][0]["props"]["model"] for column in input_row["content"]] == [
+        "directory_rules./mnt/media:/tv.category",
+        "directory_rules./mnt/media:/tv.tags",
+    ]
+    assert input_row is not description_rows[1]
+    assert row_index(input_row) == row_index(description_rows[1]) + 1
+
+    # 重复键的非生效目录: 下一行整行警告, 不提供任何编辑入口
+    warning = next(node for node in _form_components(form, "VAlert") if node["props"].get("title") == "目录规则不生效")
+    # 冲突提示用用户语言说明原因, 不再把内部键写进标题或正文
+    assert "解析为同一规则" in warning["props"]["text"]
+    assert "只在前面的目录中设置分类和标签" in warning["props"]["text"]
+    assert "/mnt/media:/tv" not in warning["props"]["text"]
+    warning_row = _form_row_containing(form, warning)
+    assert warning_row is not None
+    assert warning_row is not description_rows[2]
+    assert _row_column_props(warning_row) == [{"cols": 12, "md": 12}]
+    assert [leaf["component"] for column in warning_row["content"] for leaf in column["content"]] == ["VAlert"]
+    assert row_index(warning_row) == row_index(description_rows[2]) + 1
+    models = _form_models(form)
+    assert models.count("directory_rules./mnt/media:/tv.category") == 1
+    assert models.count("directory_rules./mnt/media:/tv.tags") == 1
+
+    # 通用说明/冲突/失效提示/配置与宿主 issue 都不与输入控件共享行, 提示列一律整行
+    inputs = {"VTextField", "VCombobox", "VSwitch", "VTextarea"}
+    for row in _form_components(form, "VRow"):
+        nodes = _walk_form(row["content"])
+        if not any(node["component"] == "VAlert" for node in nodes):
+            continue
+        assert [node for node in nodes if node["component"] in inputs] == []
+        assert _row_column_props(row) == [{"cols": 12, "md": 12}] * len(row["content"])
 
 
 def test_form_directory_row_key_matches_runtime_key(monkeypatch):
@@ -549,7 +655,6 @@ def test_form_directory_row_key_matches_runtime_key(monkeypatch):
     matched = module.match_rule(
         normalized_saved,
         directory_key="电视目录",
-        media={"media_type": "电影", "media_category": ""},
     )
     assert matched["level"] == "directory"
     assert matched["rule"] == {"category": "电视剧", "tags": ["tv", "高清"]}
@@ -557,7 +662,7 @@ def test_form_directory_row_key_matches_runtime_key(monkeypatch):
 
 
 def test_form_shows_stale_and_conflict_notes(monkeypatch):
-    """失效目录键与完整键冲突在页面可见且带状态, 优先级/#序号说明与九键模型不受影响."""
+    """失效目录键与目录规则冲突在页面可见且带状态, 优先级说明与八键模型不受影响."""
     _, plugin, _, _ = _prepare(
         monkeypatch,
         directories=[
@@ -579,18 +684,63 @@ def test_form_shows_stale_and_conflict_notes(monkeypatch):
     page_text = _form_text(form)
     assert "已失效目录键（1 个）" in page_text
     assert "/mnt/media:/old → 已失效" in page_text
-    assert "目录键冲突：/mnt/media:/tv" in page_text
-    assert "电视剧(priority=3, #1)" in page_text
-    assert "电视剧副本(priority=4, #2)" in page_text
-    assert "首条（#1）生效" in page_text
+    assert "目录规则冲突" in page_text
+    assert "目录键冲突" not in page_text
+    assert "“电视剧”和“电视剧副本”对应同一目录规则" in page_text
+    assert "请只在“电视剧”中设置分类和标签；当前“电视剧副本”不生效" in page_text
     assert "数值小者优先" in page_text
-    assert "#序号 会随目录增删漂移" in page_text
-    assert "目录 + 媒体类别 > 目录 > 默认规则" in page_text
+    assert "只需在各目录的分类/标签输入框中配置，无需修改匹配标识" in page_text
+    assert "匹配顺序：目录规则 > 默认规则" in page_text
+
+    # 冲突提示不泄露内部键/优先级/序号等实现细节
+    conflict_nodes = [node for node in _form_components(form, "VAlert") if node["props"].get("title") == "目录规则冲突"]
+    assert len(conflict_nodes) == 1
+    conflict_text = conflict_nodes[0]["props"]["text"]
+    for jargon in ("目录键", "完整键", "priority", "#1", "#2", "/mnt/media"):
+        assert jargon not in conflict_text
 
     # 失效键仍在默认模型中保留, 保存后可原样回写
     assert model["directory_rules"]["/mnt/media:/old"] == {"category": "旧目录", "tags": []}
     assert tuple(model) == EXPECTED_CONFIG_KEYS
     assert "_issues" not in model
+
+
+def test_form_conflict_alert_lists_effective_and_inactive_names(monkeypatch):
+    """冲突提示逐个列出生效/不生效目录名, 多目录与空名称都可读."""
+    _, plugin, _, _ = _prepare(
+        monkeypatch,
+        directories=[
+            _directory("动画", "/mnt/media", "/anime", 1),
+            _directory("国漫", "/mnt/media", "/anime", 2),
+            _directory("日番", "/mnt/media", "/anime", 3),
+            {"name": "", "storage": "/mnt/media", "download_path": "/empty", "priority": 4},
+            {"name": "", "storage": "/mnt/media", "download_path": "/empty", "priority": 5},
+        ],
+    )
+    plugin.init_plugin({})
+
+    form, _ = plugin.get_form()
+
+    conflicts = [
+        node["props"]["text"]
+        for node in _form_components(form, "VAlert")
+        if node["props"].get("title") == "目录规则冲突"
+    ]
+    assert conflicts == [
+        "“动画”、“国漫”和“日番”对应同一目录规则，请只在“动画”中设置分类和标签；当前“国漫”和“日番”不生效。",
+        "“未命名目录”和“未命名目录”对应同一目录规则，请只在“未命名目录”中设置分类和标签；当前“未命名目录”不生效。",
+    ]
+    for text in conflicts:
+        for jargon in ("目录键", "完整键", "priority", "#1", "#2", "/mnt/media"):
+            assert jargon not in text
+    # 说明行同样只用目录名与下载路径, 空名称落到“未命名目录”
+    summaries = [
+        node["props"]["text"]
+        for node in _form_components(form, "VAlert")
+        if node["props"].get("text", "").startswith("目录 #")
+    ]
+    assert summaries[0] == "目录 #1：动画｜下载路径：/mnt/media:/anime"
+    assert summaries[3] == "目录 #4：未命名目录｜下载路径：/mnt/media:/empty"
 
 
 def test_get_form_empty_directories_and_no_side_effects(monkeypatch):
@@ -605,11 +755,10 @@ def test_get_form_empty_directories_and_no_side_effects(monkeypatch):
 
     assert model["directory_rules"] == {}
     assert model["default_rule"] == {"category": "默认", "tags": ["a", "b"]}
-    assert isinstance(model["category_rules"], str)
     assert tuple(model) == EXPECTED_CONFIG_KEYS
     page_text = _form_text(form)
     assert "当前宿主目录配置中没有 download_path 非空的目录" in page_text
-    assert "默认分类" in page_text and "目录 + 媒体类别规则" in page_text
+    assert "默认分类" in page_text and "目录规则优先级" in page_text
 
     assert len(oper.calls) == calls_before
     assert store.get_calls == [] and store.save_calls == []
@@ -627,7 +776,7 @@ def test_get_module_is_placeholder():
 
 
 def test_get_page_is_implemented(monkeypatch):
-    """get_page 方法体不再是占位, 空记录时返回 VAlert 空态且不抛异常."""
+    """get_page 方法体不再是占位: 无记录时只给出记录区空态, 不写数据."""
     _, plugin, fake_logger, _ = _prepare(monkeypatch)
     store = _bind_store(plugin)
 
@@ -635,13 +784,12 @@ def test_get_page_is_implemented(monkeypatch):
 
     # 宿主按「方法体是否全为占位语句」判定 has_page, 本插件确有详情页
     assert _method_body_is_placeholder("get_page") is False
-    assert page is not None
-    assert [node["component"] for node in page] == ["VAlert"]
-    assert page[0]["props"]["type"] == "info"
+    assert page
+    assert page[0]["component"] == "VAlert"
     assert page[0]["props"]["title"] == "暂无处理记录"
-    assert "本页只读" in page[0]["props"]["text"]
+    assert "记录区只读" in page[0]["props"]["text"]
     assert json.loads(json.dumps(page)) == page
-    # 空态只读记录, 不写插件数据
+    # 页面只读取处理记录, 不写插件数据
     assert store.get_calls == ["records"]
     assert store.save_calls == []
     assert fake_logger.warnings == []
@@ -653,7 +801,7 @@ def test_plugin_only_uses_stable_v3_imports():
 
     for name in modules:
         assert not name.startswith(LEGACY_MODULE_PREFIXES), name
-    app_imports = {name for name in modules if name.startswith("app.")}
+    app_imports = {name for name in modules if name == "app" or name.startswith("app.")}
     assert app_imports <= ALLOWED_APP_IMPORTS, app_imports
 
 
@@ -1185,7 +1333,6 @@ def _hit_config(**overrides: Any) -> dict[str, Any]:
         "dry_run": False,
         "default_rule": {},
         "directory_rules": {"/mnt/media:/tv": {"category": "电视剧", "tags": ["tv"]}},
-        "category_rules": [],
     }
     config.update(overrides)
     return config
@@ -1862,6 +2009,16 @@ def _page_events(page: Any) -> list[tuple[str, Any]]:
     return events
 
 
+def _page_alerts(page: Any) -> list[dict[str, Any]]:
+    """返回页面全部 VAlert 的 props, 便于断言合并后的卡片数量与合并后的文案."""
+    return [node["props"] for node in _form_components(page, "VAlert")]
+
+
+def _page_alert_titles(page: Any) -> list[str]:
+    """返回页面全部 VAlert 标题, 用于断言不再按状态重复堆叠多张卡."""
+    return [str(alert.get("title", "")) for alert in _page_alerts(page)]
+
+
 def test_get_page_table_matches_record_fields(monkeypatch):
     """有记录时返回只读 VDataTable：九列表头与记录字段精确对应, items 最近优先且可序列化."""
     module, plugin, _, _ = _prepare(monkeypatch)
@@ -1929,20 +2086,24 @@ def test_get_page_status_display_covers_all_five(monkeypatch):
     store.data[module.RECORDS_KEY] = [_page_record(status, status) for status in expected]
     page = plugin.get_page()
 
-    # 图例逐项标明原始状态值、显示标签与含义, dry_run/unsupported 不伪装成成功
-    page_text = _form_text(page)
+    # 图例与概述合并进唯一的记录说明块, 逐项标明原始状态值与显示标签
+    record_alerts = [alert for alert in _page_alerts(page) if alert["title"].startswith("最近处理记录")]
+    assert len(record_alerts) == 1
+    record_text = record_alerts[0]["text"]
+    assert "最近 7 天内" in record_text
+    assert "状态图例" in record_text
     for status in expected:
-        assert f"{status}：{display[status]['label']}" in page_text
-        assert display[status]["hint"] in page_text
+        assert f"{status}={display[status]['label']}" in record_text
+    assert "记录状态说明" not in _page_alert_titles(page)
 
     chips = _form_components(page, "VChip")
-    assert [chip["props"]["text"] for chip in chips] == [f"{display[status]['label']} 1" for status in expected]
+    assert [chip["text"] for chip in chips] == [f"{display[status]['label']} 1" for status in expected]
     assert [chip["props"]["color"] for chip in chips] == [display[status]["color"] for status in expected]
-    assert "非成功" in chips[-1]["props"]["text"]
+    assert "非成功" in chips[-1]["text"]
 
 
 def test_get_page_read_only(monkeypatch):
-    """详情页只读：不取 writer、不写插件数据、无事件绑定、模型绑定与编辑控件."""
+    """记录区完全只读: 无 model 绑定、无事件绑定, 不取 writer、不写插件数据."""
     module, plugin, _, store = _prepare_event(monkeypatch)
     writer = _FakeWriter()
     writer_calls = _install_writer(module, monkeypatch, writer)
@@ -1956,15 +2117,23 @@ def test_get_page_read_only(monkeypatch):
     assert writer.tag_calls == []
     assert writer.category_calls == []
     assert store.save_calls == []
-    # 页面不提供任何点击事件、编辑绑定或输入控件
-    assert _page_events(page) == []
+    # 页面不提供任何 model 绑定或输入控件, 也没有 Vuetify 事件以外的 onxxx 绑定
     assert _form_models(page) == []
-    assert {node["component"] for node in _walk_form(page)} == {"VAlert", "VRow", "VCol", "VChip", "VDataTable"}
+    assert _page_events(page) == []
+    # 记录区只剩一块说明卡, 不因合并而多出任何事件绑定
+    assert _page_alert_titles(page) == ["最近处理记录（最近在前，共 2 条）"]
+    assert all(alert["type"] == "info" for alert in _page_alerts(page))
+    for name in ("VTextField", "VCombobox", "VTextarea", "VSwitch"):
+        assert _form_components(page, name) == []
+    # 页面不存在任何按钮, 记录表格节点本身也没有事件绑定
+    assert _form_components(page, "VBtn") == []
+    for node in _form_components(page, "VDataTable"):
+        assert "events" not in node
     assert json.loads(json.dumps(page)) == page
 
 
 def test_get_page_degrades_on_read_failure(monkeypatch):
-    """记录读取抛异常时详情页降级为空态并记 warning, 不向上抛."""
+    """存储读取抛异常时记录区降级为空态提示并记 warning, 不向上抛."""
     _, plugin, fake_logger, _ = _prepare(monkeypatch)
 
     def broken_get(key: Any = None) -> Any:
@@ -1974,7 +2143,7 @@ def test_get_page_degrades_on_read_failure(monkeypatch):
 
     page = plugin.get_page()
 
-    assert [node["component"] for node in page] == ["VAlert"]
+    assert page[0]["component"] == "VAlert"
     assert page[0]["props"]["title"] == "暂无处理记录"
     assert any("读取处理记录失败" in message and "db down" in message for message in fake_logger.warnings)
     assert json.loads(json.dumps(page)) == page

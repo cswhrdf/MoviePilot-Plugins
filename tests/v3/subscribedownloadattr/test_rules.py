@@ -1,6 +1,6 @@
 """rules.py 纯逻辑层的 focused 单测.
 
-只覆盖目录键、配置规范化、三级匹配与标签合并：不 mock 被测函数本身，不访问网络、
+只覆盖目录键、配置规范化、两级匹配与标签合并：不 mock 被测函数本身，不访问网络、
 数据库或下载器，断言全部基于实际返回值、顺序与冲突结果。
 """
 
@@ -21,7 +21,6 @@ DEFAULT_CONFIG = {
     "dry_run": False,
     "default_rule": {"category": "", "tags": []},
     "directory_rules": {},
-    "category_rules": [],
 }
 
 
@@ -145,7 +144,7 @@ def test_resolve_directory_keys_empty_input():
 
 
 def test_normalize_config_defaults():
-    """空配置补齐九个默认键, 键顺序与配置模型一致且可 json.dumps."""
+    """空配置补齐八个默认键, 键顺序与配置模型一致且可 json.dumps."""
     normalized, issues = rules.normalize_config(None)
 
     assert tuple(normalized) == rules.CONFIG_KEYS
@@ -234,157 +233,179 @@ def test_normalize_config_rules():
     assert issues == []
 
 
-def test_normalize_config_category_rules():
-    """category_rules 同时接受 list 与 JSON 字符串, 坏条目跳过并保留有效项."""
-    raw_rules = [
+def test_normalize_config_legacy_category_rules_ignored():
+    """旧配置的 category_rules 不再进入模型, 只记提示且不影响其余配置."""
+    normalized, issues = rules.normalize_config(
         {
-            "directory": " /mnt:/tv ",
-            "media_type": "电视剧",
-            "media_category": "",
-            "category": " TV ",
-            "tags": "tv",
-        },
-        {"directory": "", "category": "skip"},
-        "not-a-dict",
-        {"media_type": "动漫"},
-        {"directory": "/mnt:/doc", "media_category": "动画", "tags": ["anime", "anime"]},
-    ]
+            "enabled": False,
+            "category_rules": [{"directory": "/mnt:/tv", "media_type": "电视剧", "category": "anime"}],
+        }
+    )
 
-    from_list, list_issues = rules.normalize_config({"category_rules": raw_rules})
-    from_json, json_issues = rules.normalize_config({"category_rules": json.dumps(raw_rules, ensure_ascii=False)})
+    assert "category_rules" not in normalized
+    assert tuple(normalized) == rules.CONFIG_KEYS
+    assert normalized["enabled"] is False
+    assert len(issues) == 1
+    assert "category_rules" in issues[0] and "不再使用" in issues[0]
+    assert json.loads(json.dumps(normalized)) == normalized
 
-    assert from_list["category_rules"] == from_json["category_rules"]
-    assert list_issues == json_issues
-    assert len(list_issues) == 3
-
-    category_rules = from_list["category_rules"]
-    assert len(category_rules) == 2
-    assert category_rules[0] == {
-        "directory": "/mnt:/tv",
-        "media_type": "电视剧",
-        "media_category": "",
-        "category": "TV",
-        "tags": ["tv"],
-    }
-    assert category_rules[1] == {
-        "directory": "/mnt:/doc",
-        "media_type": "",
-        "media_category": "动画",
-        "category": "",
-        "tags": ["anime"],
-    }
-
+    # 旧值即使是非法 JSON 字符串也只按忽略处理, 不额外报解析错误
     normalized, issues = rules.normalize_config({"category_rules": "{not json"})
-    assert normalized["category_rules"] == []
+    assert "category_rules" not in normalized
     assert len(issues) == 1
+    assert "不再使用" in issues[0]
 
-    normalized, issues = rules.normalize_config({"category_rules": '{"directory": "x"}'})
-    assert normalized["category_rules"] == []
-    assert len(issues) == 1
 
-    normalized, issues = rules.normalize_config({"category_rules": "   "})
-    assert normalized["category_rules"] == []
+def test_normalize_config_flat_directory_rules():
+    """点号扁平目录规则还原为嵌套, 目录键可含 . : / 且不被错误拆分."""
+    normalized, issues = rules.normalize_config(
+        {
+            "directory_rules.local:/data/downloads/番剧.category": "番剧",
+            "directory_rules.local:/data/downloads/番剧.tags": ["anime", ""],
+            "directory_rules./mnt:/tv.category": "电视剧",
+            "directory_rules.my.dir.category": "动画",
+        }
+    )
+
+    assert normalized["directory_rules"] == {
+        "local:/data/downloads/番剧": {"category": "番剧", "tags": ["anime"]},
+        "/mnt:/tv": {"category": "电视剧", "tags": []},
+        "my.dir": {"category": "动画", "tags": []},
+    }
+    assert issues == []
+    assert tuple(normalized) == rules.CONFIG_KEYS
+    assert json.loads(json.dumps(normalized)) == normalized
+
+
+def test_normalize_config_flat_default_rule_fills_empty_nested():
+    """嵌套默认规则字段为空时由扁平值补入, 不丢默认标签."""
+    normalized, issues = rules.normalize_config(
+        {
+            "default_rule": {"category": "", "tags": []},
+            "default_rule.tags": ["BT"],
+        }
+    )
+
+    assert normalized["default_rule"] == {"category": "", "tags": ["BT"]}
     assert issues == []
 
 
-# ---------------- 三级匹配 ----------------
+def test_normalize_config_flat_conflicts_nested_wins():
+    """嵌套与扁平两处都有值时以嵌套为准并记 issue."""
+    normalized, issues = rules.normalize_config(
+        {
+            "default_rule": {"category": "电影", "tags": ["A"]},
+            "default_rule.category": "番剧",
+            "default_rule.tags": ["B"],
+            "directory_rules": {"/mnt:/tv": {"category": "电视剧", "tags": ["tv"]}},
+            "directory_rules./mnt:/tv.category": "番剧",
+            "directory_rules./mnt:/tv.tags": ["anime"],
+        }
+    )
+
+    assert normalized["default_rule"] == {"category": "电影", "tags": ["A"]}
+    assert normalized["directory_rules"] == {"/mnt:/tv": {"category": "电视剧", "tags": ["tv"]}}
+    assert len(issues) == 3
+    assert all("以嵌套为准" in issue for issue in issues)
+
+
+def test_normalize_config_flat_unknown_field_ignored():
+    """扁平键字段名非 category/tags 时忽略并记 issue."""
+    normalized, issues = rules.normalize_config(
+        {
+            "default_rule.unknown": "x",
+            "directory_rules./mnt:/tv.unknown": "y",
+        }
+    )
+
+    assert normalized["default_rule"] == {"category": "", "tags": []}
+    assert normalized["directory_rules"] == {}
+    assert len(issues) == 2
+    assert all("不是受支持的" in issue for issue in issues)
+
+
+def test_normalize_config_flat_real_machine_shape():
+    """实机扁平配置还原后命中目录级, 不再退回 default 空规则."""
+    normalized, issues = rules.normalize_config(
+        {
+            "enabled": True,
+            "trigger": "subscribe",
+            "directory_rules": {},
+            "default_rule": {"category": "", "tags": []},
+            "default_rule.tags": ["BT"],
+            "directory_rules.local:/data/downloads/番剧.category": "番剧",
+            "directory_rules.local:/data/downloads/番剧.tags": ["anime"],
+        }
+    )
+
+    assert normalized["directory_rules"] == {"local:/data/downloads/番剧": {"category": "番剧", "tags": ["anime"]}}
+    assert normalized["default_rule"] == {"category": "", "tags": ["BT"]}
+    assert issues == []
+    assert tuple(normalized) == rules.CONFIG_KEYS
+
+    matched = rules.match_rule(normalized, "local:/data/downloads/番剧")
+    assert matched["level"] == "directory"
+    assert matched["matched"] is True
+    assert matched["rule"] == {"category": "番剧", "tags": ["anime"]}
+
+
+# ---------------- 两级匹配 ----------------
 
 
 def _match_config() -> dict:
-    """构造覆盖三级匹配的配置样本."""
+    """构造覆盖目录级与默认级的配置样本."""
     return {
         "default_rule": {"category": "default", "tags": ["default"]},
         "directory_rules": {"/mnt:/tv": {"category": "电视剧", "tags": ["tv"]}},
-        "category_rules": [
-            {
-                "directory": "/mnt:/tv",
-                "media_type": "电视剧",
-                "media_category": "动画",
-                "category": "anime",
-                "tags": ["anime"],
-            },
-            {"directory": "/mnt:/tv", "media_type": "电影", "category": "movie", "tags": []},
-        ],
     }
 
 
 def test_match_rule_priority():
-    """目录+类别 > 目录 > 默认, 且不匹配时向下一级回落."""
+    """目录 > 默认, 目录未配置时向默认级回落."""
     config = _match_config()
 
-    hit = rules.match_rule(config, "/mnt:/tv", {"media_type": "电视剧", "media_category": "动画"})
-    assert hit["level"] == "category"
-    assert hit["rule"] == {"category": "anime", "tags": ["anime"]}
-    assert hit["rule_index"] == 1
-    assert hit["matched"] is True
-
-    # 媒体类型/类别都不满足类别规则 -> 目录级
-    hit = rules.match_rule(config, "/mnt:/tv", {"media_type": "电视剧", "media_category": "真人"})
-    assert hit["level"] == "directory"
-    assert hit["rule"] == {"category": "电视剧", "tags": ["tv"]}
-    assert hit["rule_index"] is None
+    hit = rules.match_rule(config, "/mnt:/tv")
+    assert hit == {
+        "level": "directory",
+        "matched": True,
+        "rule": {"category": "电视剧", "tags": ["tv"]},
+        "rule_index": None,
+    }
 
     # 目录未配置 -> 默认级
-    hit = rules.match_rule(config, "/mnt:/doc", {"media_type": "电视剧"})
+    hit = rules.match_rule(config, "/mnt:/doc")
     assert hit["level"] == "default"
     assert hit["rule"] == {"category": "default", "tags": ["default"]}
 
     # 无目录键时仍可使用默认规则
-    hit = rules.match_rule(config, None, {"media_type": "电视剧"})
+    hit = rules.match_rule(config, None)
     assert hit["level"] == "default"
-    hit = rules.match_rule(config, "   ", {"media_type": "电视剧"})
-    assert hit["level"] == "default"
-
-
-def test_match_rule_category_rule_media_filters():
-    """类别规则的 media_type/media_category 为空表示不限, 非空必须与快照一致."""
-    config = _match_config()
-
-    # 第二条规则只限定 media_type=电影, 类别不限
-    hit = rules.match_rule(config, "/mnt:/tv", {"media_type": "电影"})
-    assert hit["level"] == "category"
-    assert hit["rule_index"] == 2
-    assert hit["rule"]["category"] == "movie"
-
-    only_category = {
-        "default_rule": {"category": "default", "tags": []},
-        "category_rules": [{"directory": "/k", "media_category": "动画", "category": "anime"}],
-    }
-    hit = rules.match_rule(only_category, "/k", {"media_category": "动画"})
-    assert hit["level"] == "category"
-    assert hit["rule"]["category"] == "anime"
-
-    # 媒体快照缺失时, 限定维度的规则不命中
-    hit = rules.match_rule(only_category, "/k")
-    assert hit["level"] == "default"
-
-    # 规则目录与命中目录键不一致时不命中
-    hit = rules.match_rule(only_category, "/other", {"media_category": "动画"})
+    hit = rules.match_rule(config, "   ")
     assert hit["level"] == "default"
 
 
 def test_match_rule_empty_hit_does_not_fall_through():
-    """空命中仍停在对应层级, 不向下一级逐字段回落."""
+    """空命中仍停在目录层级, 不向默认级逐字段回落."""
     config = {
         "default_rule": {"category": "default", "tags": ["default"]},
         "directory_rules": {"/k": {"category": "", "tags": []}},
-        "category_rules": [{"directory": "/k", "media_type": "电视剧", "category": "", "tags": []}],
     }
 
-    hit = rules.match_rule(config, "/k", {"media_type": "电视剧"})
-    assert hit["level"] == "category"
-    assert hit["matched"] is False
-    assert hit["rule"] == {"category": "", "tags": []}
-
-    hit = rules.match_rule(config, "/k", {"media_type": "纪录片"})
+    hit = rules.match_rule(config, "/k")
     assert hit["level"] == "directory"
     assert hit["matched"] is False
     assert hit["rule"] == {"category": "", "tags": []}
+    assert hit["rule_index"] is None
+
+    # 目录未配置时落到默认级
+    hit = rules.match_rule(config, "/other")
+    assert hit["level"] == "default"
+    assert hit["rule"] == {"category": "default", "tags": ["default"]}
 
 
 def test_match_rule_without_any_rule():
     """没有任何规则时返回默认级空规则, 行为稳定可断言."""
-    hit = rules.match_rule({}, "/k", {"media_type": "电视剧"})
+    hit = rules.match_rule({}, "/k")
 
     assert hit == {
         "level": "default",
@@ -420,4 +441,4 @@ def test_rules_module_is_dependency_free():
     modules = _imported_modules()
 
     assert [name for name in modules if name.startswith("app")] == []
-    assert set(modules) <= {"__future__", "json", "collections.abc", "typing"}
+    assert set(modules) <= {"__future__", "collections.abc", "typing"}

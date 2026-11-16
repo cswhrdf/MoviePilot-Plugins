@@ -5,13 +5,12 @@
 已实现 ``EventType.DownloadAdded`` 事件处理：开关与来源过滤、媒体守卫、目录解析与
 保存路径二次确认、规则命中、``dry_run`` 分流、能力探测式写入与异常隔离；同时包含
 纯逻辑规则层（``rules.py``）、宿主只读适配、下载器写入适配（``writer.py``）、
-处理记录与 7 天去重表的插件数据持久化、按宿主实时目录生成的配置页，以及只读的
-处理记录详情页。
+处理记录与 7 天去重表的插件数据持久化、按宿主实时目录生成的配置页，以及只读处理
+记录的详情页。
 """
 
 from __future__ import annotations
 
-import json
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from enum import Enum
@@ -103,6 +102,9 @@ PAGE_HEADERS = (
 # 目录规则的模型字段路径前缀：动态行按目录键绑定, 键本身始终取自 rules 生成的目录键
 DIRECTORY_RULE_PREFIX = "directory_rules"
 DEFAULT_RULE_PREFIX = "default_rule"
+
+# 订阅来源前缀：下载器适配层把订阅信息以 ``Subscribe|{json}`` 形式写进 source
+SUBSCRIPTION_SOURCE_PREFIX = "Subscribe|"
 
 
 def _form_component(component: str, props: Mapping[str, Any]) -> dict[str, Any]:
@@ -200,8 +202,6 @@ class SubscribeDownloadAttr(_PluginBase):
     # 规范化后的配置快照与规范化提示；同为零副作用的最小运行态
     _config: dict[str, Any] | None = None
     _config_issues: tuple[str, ...] = ()
-    # 最近一次配置里 category_rules 的原文：仅供配置页回填, 保留非法 JSON 供页面提示
-    _category_rules_source: Any = None
     # 宿主只读适配结果：校验后的目录快照、目录键结构、降级提示与系统标签
     _directories: tuple[dict[str, Any], ...] = ()
     _directory_keys: dict[str, Any] | None = None
@@ -227,7 +227,6 @@ class SubscribeDownloadAttr(_PluginBase):
         normalized, issues = normalize_config(config)
         self._config = normalized
         self._config_issues = tuple(issues)
-        self._category_rules_source = config.get("category_rules") if isinstance(config, Mapping) else None
         self._enabled = bool(normalized["enabled"])
         self._conflicts_warned = False
         self._records_cache = None
@@ -468,7 +467,7 @@ class SubscribeDownloadAttr(_PluginBase):
         prepared = self._preflight_event(payload, now)
         if prepared is None:
             return
-        hash_value, title, context, media_info, snapshot, config = prepared
+        hash_value, title, context, media_info, config = prepared
 
         self._warn_directory_conflicts()
         entry, reason = self._resolve_event_directory(media_info, context)
@@ -482,7 +481,32 @@ class SubscribeDownloadAttr(_PluginBase):
             return
 
         key = entry["key"]
-        match = match_rule(config, directory_key=key, media=snapshot)
+        self._apply_match(
+            now=now,
+            payload=payload,
+            hash_value=hash_value,
+            title=title,
+            directory_key=key,
+            config=config,
+            match=match_rule(config, directory_key=key),
+        )
+
+    def _apply_match(
+        self,
+        *,
+        now: datetime,
+        payload: Any,
+        hash_value: str,
+        title: str,
+        directory_key: str,
+        config: Mapping[str, Any],
+        match: Mapping[str, Any],
+    ) -> None:
+        """按同一份匹配结果决定跳过、``dry_run`` 或实际写入, 并写一条记录.
+
+        ``dry_run`` 与实际写入都用调用方传入的同一个 ``match``，保证记录与拟写入值一致；
+        分类为空时不调用分类写入，标签为空时既不读也不写标签。
+        """
         rule = match["rule"]
         level = match["level"]
         category = rule["category"] if config["apply_category"] else ""
@@ -492,7 +516,7 @@ class SubscribeDownloadAttr(_PluginBase):
                 now=now,
                 hash_value=hash_value,
                 title=title,
-                directory_key=key,
+                directory_key=directory_key,
                 level=level,
                 category=category,
                 tags=tags,
@@ -504,7 +528,7 @@ class SubscribeDownloadAttr(_PluginBase):
                 now=now,
                 hash_value=hash_value,
                 title=title,
-                directory_key=key,
+                directory_key=directory_key,
                 level=level,
                 reason="分类与标签写入均被配置关闭，无可写入项",
             )
@@ -514,7 +538,7 @@ class SubscribeDownloadAttr(_PluginBase):
                 now=now,
                 hash_value=hash_value,
                 title=title,
-                directory_key=key,
+                directory_key=directory_key,
                 level=level,
                 category=category,
                 tags=tags,
@@ -535,7 +559,7 @@ class SubscribeDownloadAttr(_PluginBase):
             now=now,
             hash_value=hash_value,
             title=title,
-            directory_key=key,
+            directory_key=directory_key,
             level=level,
             category=category,
             tags=tags,
@@ -548,7 +572,7 @@ class SubscribeDownloadAttr(_PluginBase):
         self,
         payload: Any,
         now: datetime,
-    ) -> tuple[str, str, Any, Any, dict[str, Any], dict[str, Any]] | None:
+    ) -> tuple[str, str, Any, Any, dict[str, Any]] | None:
         """执行 payload、hash、来源、媒体与去重的前置判定, 需跳过时写记录并返回 None."""
         if not isinstance(payload, Mapping):
             self._record_skip(now=now, hash_value="", title="", reason="事件 payload 不是对象，已跳过")
@@ -558,7 +582,7 @@ class SubscribeDownloadAttr(_PluginBase):
             self._record_skip(now=now, hash_value="", title="", reason="事件缺少任务 hash，已跳过")
             return None
         config = self._config_snapshot()
-        if config["trigger"] == "subscribe" and not _text(payload.get("source")).startswith("Subscribe|"):
+        if config["trigger"] == "subscribe" and not _text(payload.get("source")).startswith(SUBSCRIPTION_SOURCE_PREFIX):
             self._record_skip(
                 now=now,
                 hash_value=hash_value,
@@ -586,7 +610,7 @@ class SubscribeDownloadAttr(_PluginBase):
                 reason="同一 hash 在 7 天内已处理，本次不重复写入",
             )
             return None
-        return hash_value, title, context, media_info, snapshot, config
+        return hash_value, title, context, media_info, config
 
     def _record_skip(
         self,
@@ -961,8 +985,11 @@ class SubscribeDownloadAttr(_PluginBase):
     def get_api(self) -> list[dict[str, Any]]:
         """返回插件 API 列表.
 
-        当前返回空列表，表示钩子已实现且暂未暴露 API；订阅覆盖接口落地时
-        应替换本返回值。
+        本期不注册任何 API，空列表表示钩子已实现且无内容。
+
+        Returns:
+            空列表。
+
         """
         return []
 
@@ -971,9 +998,10 @@ class SubscribeDownloadAttr(_PluginBase):
     def get_form(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """返回配置页 JSON 与默认配置模型.
 
-        表单分四块：基础开关与触发来源、默认规则、按宿主实时目录生成的目录规则行、
-        目录 + 媒体类别规则 JSON 文本域；只读提示（配置/宿主 issue、失效目录键、
-        完整键冲突、优先级说明）只作为页面组件出现，不进入默认模型。目录行与规则键
+        表单分三块：基础开关与触发来源、默认规则、按宿主实时目录生成的目录规则行；只读
+        提示（配置/宿主 issue、失效目录键、完整键冲突、优先级说明）只作为页面组件出现，
+        不进入默认模型。目录规则区每个目录占两行：整行只读说明在上，分类/标签输入另起
+        一行，说明不与输入共享行。目录行与规则键
         全部取自最近一次 ``init_plugin`` 生成的 ``_directories`` / ``_directory_keys``，
         本方法不重新读取、不重新排序、也不写回宿主配置或下载器。
 
@@ -987,7 +1015,6 @@ class SubscribeDownloadAttr(_PluginBase):
             *self._form_issue_alerts(),
             *self._form_basic_sections(),
             *self._form_directory_sections(normalized),
-            self._form_category_rules_section(),
         ]
         return [{"component": "VForm", "content": content}], self._form_default_model(normalized)
 
@@ -1092,18 +1119,18 @@ class SubscribeDownloadAttr(_PluginBase):
 
     @staticmethod
     def _form_priority_alert() -> dict[str, Any]:
-        """返回目录键与优先级说明（只读, 不绑定模型）."""
+        """返回目录规则优先级与匹配标识说明（只读, 不绑定模型）."""
         return {
             "component": "VAlert",
             "props": {
                 "type": "info",
                 "variant": "tonal",
-                "title": "目录规则键与优先级",
+                "title": "目录规则优先级",
                 "text": (
-                    "目录行按宿主目录 priority 升序排列，数值小者优先，同优先级保持宿主配置顺序；"
-                    "规则键优先 storage:download_path，缺失时回退目录名，仍缺失时使用 #序号，"
-                    "#序号 会随目录增删漂移，不建议长期依赖；完整键重复时按 priority 升序首条生效，"
-                    "其余重复项不生效。匹配顺序：目录 + 媒体类别 > 目录 > 默认规则。"
+                    "目录行按宿主的目录优先级（priority）升序排列，数值小者优先，相同优先级保持宿主配置顺序；"
+                    "同一下载目录对应同一个目录匹配标识，标识由系统自动生成，"
+                    "只需在各目录的分类/标签输入框中配置，无需修改匹配标识。"
+                    "匹配顺序：目录规则 > 默认规则；同一目录只采用首条生效的目录规则。"
                 ),
             },
         }
@@ -1115,28 +1142,39 @@ class SubscribeDownloadAttr(_PluginBase):
         effective = set((keys or {}).get("effective_keys") or {})
         return [str(key) for key in configured if key not in effective]
 
+    @staticmethod
+    def _quoted_names(names: Sequence[str]) -> str:
+        """把目录名列表按中文习惯拼接成「A」、「B」和「C」."""
+        quoted = [f"“{name}”" for name in names]
+        if len(quoted) == 1:
+            return quoted[0]
+        return "、".join(quoted[:-1]) + f"和{quoted[-1]}"
+
+    @classmethod
+    def _form_conflict_text(cls, conflict: Mapping[str, Any]) -> str:
+        """按首条生效项说明哪些目录共用同一规则, 只用目录名, 不出现内部键."""
+        names = [str(name).strip() or "未命名目录" for name in conflict.get("names") or ()]
+        if len(names) < 2:
+            return ""
+        return (
+            f"{cls._quoted_names(names)}对应同一目录规则，"
+            f"请只在{cls._quoted_names(names[:1])}中设置分类和标签；"
+            f"当前{cls._quoted_names(names[1:])}不生效。"
+        )
+
     def _form_directory_alerts(self, normalized: Mapping[str, Any]) -> list[dict[str, Any]]:
-        """生成完整键冲突与已失效目录键的只读提示."""
+        """生成目录规则冲突与已失效目录键的只读提示."""
         keys = self._directory_keys
         alerts: list[dict[str, Any]] = []
         for conflict in (keys or {}).get("conflicts") or ():
-            details = "、".join(
-                f"{name or '(未命名)'}(priority={priority}, #{sequence})"
-                for name, priority, sequence in zip(
-                    conflict["names"], conflict["priorities"], conflict["sequences"], strict=False
-                )
-            )
             alerts.append(
                 {
                     "component": "VAlert",
                     "props": {
                         "type": "warning",
                         "variant": "tonal",
-                        "title": f"目录键冲突：{conflict['key']}",
-                        "text": (
-                            f"共 {conflict['count']} 条目录产生同一完整键，涉及目录 {details}；"
-                            f"按 priority 升序首条（#{conflict['first_sequence']}）生效，其余重复项不生效"
-                        ),
+                        "title": "目录规则冲突",
+                        "text": self._form_conflict_text(conflict),
                     },
                 }
             )
@@ -1172,15 +1210,13 @@ class SubscribeDownloadAttr(_PluginBase):
                         "type": "info",
                         "variant": "tonal",
                         "title": "暂无可编辑的目录规则行",
-                        "text": (
-                            "当前宿主目录配置中没有 download_path 非空的目录；仍可使用默认规则与目录 + 媒体类别规则"
-                        ),
+                        "text": ("当前宿主目录配置中没有 download_path 非空的目录；仅可使用默认规则"),
                     },
                 }
             )
             return sections
         for entry in entries:
-            sections.append(self._form_directory_row(entry, self._directory_snapshot(entry.get("sequence"))))
+            sections.extend(self._form_directory_row(entry, self._directory_snapshot(entry.get("sequence"))))
         return sections
 
     def _directory_snapshot(self, sequence: Any) -> Mapping[str, Any]:
@@ -1193,122 +1229,115 @@ class SubscribeDownloadAttr(_PluginBase):
         return {}
 
     @staticmethod
-    def _form_directory_row(entry: Mapping[str, Any], source: Mapping[str, Any]) -> dict[str, Any]:
-        """按一条目录键条目生成一行：只读说明列 + 分类/标签输入列或不生效提示."""
-        key = str(entry.get("key") or "")
-        summary = (
-            f"目录 #{entry.get('sequence')}：{entry.get('name') or '(未命名)'}｜"
-            f"storage/download_path：{entry.get('storage') or '-'}:{entry.get('download_path') or '-'}｜"
-            f"media_type/media_category：{source.get('media_type') or '-'}/{source.get('media_category') or '-'}｜"
-            f"priority：{entry.get('priority')}｜规则键：{key}"
-        )
-        description = _form_col(
-            "VAlert",
-            {"type": "info", "variant": "tonal", "density": "compact", "text": summary},
-        )
-        if not entry.get("effective"):
-            return {
-                "component": "VRow",
-                "content": [
-                    description,
-                    {
-                        "component": "VCol",
-                        "props": {"cols": 12, "md": 8},
-                        "content": [
-                            {
-                                "component": "VAlert",
-                                "props": {
-                                    "type": "warning",
-                                    "variant": "tonal",
-                                    "density": "compact",
-                                    "title": f"规则键 {key} 不生效",
-                                    "text": (
-                                        "同一完整键已有更靠前的目录条目生效（按 priority 升序首条），"
-                                        "本行不提供编辑入口，避免覆盖首条规则"
-                                    ),
-                                },
-                            }
-                        ],
-                    },
-                ],
-            }
-        return {
-            "component": "VRow",
-            "content": [
-                description,
-                _form_col(
-                    "VTextField",
-                    {
-                        "model": f"{DIRECTORY_RULE_PREFIX}.{key}.category",
-                        "label": "目录分类",
-                        "hint": f"规则键 {key}；留空表示不修改任务分类",
-                    },
-                ),
-                _form_col(
-                    "VCombobox",
-                    {
-                        "model": f"{DIRECTORY_RULE_PREFIX}.{key}.tags",
-                        "label": "目录标签",
-                        "multiple": True,
-                        "chips": True,
-                        "closable-chips": True,
-                        "clearable": True,
-                        "hint": "输入标签后回车添加，点 × 删除；与任务既有标签合并去重",
-                    },
-                ),
-            ],
-        }
+    def _form_directory_summary(entry: Mapping[str, Any], source: Mapping[str, Any]) -> str:
+        """生成一行用户可读的目录说明: 目录名、宿主媒体类型/类别与下载路径.
+
+        priority 仍只用于排序, 匹配标识仍只用于模型绑定与冲突判断, 都不在说明行展示;
+        媒体类型/类别缺失时整段省略, 不用 ``-`` 占位.
+
+        Returns:
+            形如 ``目录 #1：动画｜电视剧 / 日番｜下载路径：local:/data/downloads/番剧`` 的一行文本.
+
+        """
+        name = str(entry.get("name") or "").strip() or "未命名目录"
+        media_type = str(source.get("media_type") or "").strip()
+        media_category = str(source.get("media_category") or "").strip()
+        media = " / ".join(part for part in (media_type, media_category) if part)
+        storage = str(entry.get("storage") or "").strip()
+        download_path = str(entry.get("download_path") or "").strip()
+        location = f"{storage}:{download_path}" if storage else download_path
+        segments = [f"目录 #{entry.get('sequence')}：{name}"]
+        if media:
+            segments.append(media)
+        if location:
+            segments.append(f"下载路径：{location}")
+        return "｜".join(segments)
 
     @staticmethod
-    def _form_category_rules_section() -> dict[str, Any]:
-        """返回目录 + 媒体类别规则的 JSON 文本域行（绑定原始 JSON 字符串）."""
-        example = json.dumps(
-            [
-                {
-                    "directory": "存储:下载目录",
-                    "media_type": "电视剧",
-                    "media_category": "动画",
-                    "category": "anime",
-                    "tags": ["anime"],
-                }
-            ],
-            ensure_ascii=False,
-        )
-        return {
+    def _form_directory_row(entry: Mapping[str, Any], source: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """按一条目录键条目生成两块整行组件：只读说明行 + 输入行或不生效提示行.
+
+        说明与输入不再共享同一 ``VRow``：说明独占整行（``cols=12/md=12``），
+        输入区另起一行，避免窄屏下说明文字与输入控件左右挤压、频繁断行。
+        非生效条目只给出整行只读提示，不渲染任何输入控件。
+
+        Returns:
+            该目录条目的 ``VRow`` 列表, 顺序为先说明行、后输入/提示行。
+
+        """
+        key = str(entry.get("key") or "")
+        summary = SubscribeDownloadAttr._form_directory_summary(entry, source)
+        description_row: dict[str, Any] = {
             "component": "VRow",
             "content": [
                 _form_col(
-                    "VTextarea",
-                    {
-                        "model": "category_rules",
-                        "label": "目录 + 媒体类别规则（JSON 数组）",
-                        "rows": 10,
-                        "auto-grow": True,
-                        "hint": (
-                            "JSON 数组，每条必须包含 directory（目录键，必填）；"
-                            "media_type / media_category 为空串表示该维度不限；"
-                            "category 为空表示不修改任务分类；tags 为字符串数组。"
-                            f"结构示例：{example}"
-                        ),
-                    },
+                    "VAlert",
+                    {"type": "info", "variant": "tonal", "density": "compact", "text": summary},
                     cols=12,
                     md=12,
                 )
             ],
         }
+        if not entry.get("effective"):
+            return [
+                description_row,
+                {
+                    "component": "VRow",
+                    "content": [
+                        _form_col(
+                            "VAlert",
+                            {
+                                "type": "warning",
+                                "variant": "tonal",
+                                "density": "compact",
+                                "title": "目录规则不生效",
+                                "text": (
+                                    "此目录与前面的目录解析为同一规则，请只在前面的目录中设置分类和标签；"
+                                    "同一匹配标识按 priority 升序首条生效，本行不提供编辑入口"
+                                ),
+                            },
+                            cols=12,
+                            md=12,
+                        )
+                    ],
+                },
+            ]
+        return [
+            description_row,
+            {
+                "component": "VRow",
+                "content": [
+                    _form_col(
+                        "VTextField",
+                        {
+                            "model": f"{DIRECTORY_RULE_PREFIX}.{key}.category",
+                            "label": "目录分类",
+                            "hint": "填写 qBittorrent 分类名称，例如：电视剧、动漫；留空则不修改分类",
+                        },
+                        cols=12,
+                        md=4,
+                    ),
+                    _form_col(
+                        "VCombobox",
+                        {
+                            "model": f"{DIRECTORY_RULE_PREFIX}.{key}.tags",
+                            "label": "目录标签",
+                            "multiple": True,
+                            "chips": True,
+                            "closable-chips": True,
+                            "clearable": True,
+                            "hint": "回车添加标签，可添加多个；留空则不修改标签",
+                        },
+                        cols=12,
+                        md=8,
+                    ),
+                ],
+            },
+        ]
 
-    def _category_rules_form_text(self, normalized: Mapping[str, Any]) -> str:
-        """返回 category_rules 的文本域默认值, 原始字符串原样保留以便观察 issue."""
-        source = self._category_rules_source
-        if isinstance(source, str) and source.strip():
-            return source
-        try:
-            return json.dumps(normalized.get("category_rules") or [], ensure_ascii=False, indent=2)
-        except (TypeError, ValueError):  # 规范化结果理论上可序列化, 兜底不打断配置页
-            return "[]"
-
-    def _form_default_model(self, normalized: Mapping[str, Any]) -> dict[str, Any]:
-        """按九键契约构造默认模型：规则结构深拷贝, category_rules 为 JSON 字符串."""
+    @staticmethod
+    def _form_default_model(normalized: Mapping[str, Any]) -> dict[str, Any]:
+        """按八键契约构造默认模型：规则结构深拷贝, 不额外附带提示字段."""
         default_rule = normalized.get("default_rule") or {}
         directory_rules = normalized.get("directory_rules") or {}
         return {
@@ -1329,29 +1358,31 @@ class SubscribeDownloadAttr(_PluginBase):
                 }
                 for key, rule in directory_rules.items()
             },
-            "category_rules": self._category_rules_form_text(normalized),
         }
 
-    # ---------------- 详情页（只读） ----------------
+    # ---------------- 详情页（只读记录） ----------------
 
     def get_page(self) -> list[dict[str, Any]] | None:
-        """返回只读详情页：最近处理记录、状态说明与状态分布.
+        """返回详情页：只读处理记录区块.
 
-        页面完全只读：记录只经 ``_load_records()`` 从插件数据与内存缓存读取，读取异常
-        按既有降级规则处理，不向上抛；不调用下载器写入适配、不写插件数据、不新增刷新
-        或订阅覆盖接口。失效目录键与完整键冲突只在配置页提示, 本页不重复。
+        页面不写插件数据、不调用下载器写入适配，记录只经 ``_load_records()`` 读取，
+        读取异常按既有降级规则处理。
 
         Returns:
-            可 ``json.dumps`` 的 Vuetify JSON：无记录时仅一个 ``VAlert`` 空态；有记录
-            时为标题说明、状态图例、状态分布 ``VChip`` 行与只读 ``VDataTable``。
+            可 ``json.dumps`` 的 Vuetify JSON：无记录时为一个 ``VAlert`` 空态，有记录时为
+            单个「最近处理记录」说明块（含状态图例）、状态分布 ``VChip`` 行与只读
+            ``VDataTable``。
 
         """
+        return self._page_record_section()
+
+    def _page_record_section(self) -> list[dict[str, Any]]:
+        """返回处理记录区块：概述与状态图例合并为单块说明, 无记录时收缩为空态."""
         records = self._page_records()
         if not records:
             return [self._page_empty_alert()]
         return [
             self._page_overview_alert(len(records)),
-            self._page_status_legend(),
             self._page_status_chips(records),
             self._page_table(records),
         ]
@@ -1393,40 +1424,29 @@ class SubscribeDownloadAttr(_PluginBase):
                 "title": "暂无处理记录",
                 "text": (
                     "启用插件并触发订阅下载后，最近 7 天的分类与标签写入结果会显示在这里；"
-                    "本页只读，不提供刷新或写入操作。"
+                    "记录区只读，不提供刷新或重写操作。"
                 ),
             },
         }
 
     @staticmethod
     def _page_overview_alert(total: int) -> dict[str, Any]:
-        """返回详情页标题说明：只读、最近优先、保留窗口与条数上限."""
-        return {
-            "component": "VAlert",
-            "props": {
-                "type": "info",
-                "variant": "tonal",
-                "title": f"最近处理记录（最近在前，共 {total} 条）",
-                "text": (
-                    f"按记录时间倒序展示最近的处理结果，仅保留 7 天内、最多 {MAX_RECORDS} 条；"
-                    "本页只读，不提供刷新、重写或订阅覆盖操作。"
-                ),
-            },
-        }
+        """返回记录区唯一的说明块：概述、只读语义与五种状态图例合并成两行文本.
 
-    @staticmethod
-    def _page_status_legend() -> dict[str, Any]:
-        """返回五种记录状态的只读说明, 明确 dry_run 与 unsupported 不属于成功."""
+        图例只以 ``状态=标签`` 形式列出，不再逐项展开 ``hint`` 含义；``dry_run`` 与
+        ``unsupported`` 继续由标签标注为非成功，不单独一张卡说明。
+        """
         lines = [
-            f"{status}：{PAGE_STATUS_DISPLAY[status]['label']}——{PAGE_STATUS_DISPLAY[status]['hint']}"
-            for status in PAGE_STATUS_ORDER
+            f"倒序展示最近 7 天内、最多 {MAX_RECORDS} 条；记录区只读。",
+            "状态图例："
+            + "；".join(f"{status}={PAGE_STATUS_DISPLAY[status]['label']}" for status in PAGE_STATUS_ORDER),
         ]
         return {
             "component": "VAlert",
             "props": {
                 "type": "info",
                 "variant": "tonal",
-                "title": "记录状态说明",
+                "title": f"最近处理记录（最近在前，共 {total} 条）",
                 "text": "\n".join(lines),
             },
         }
@@ -1451,8 +1471,8 @@ class SubscribeDownloadAttr(_PluginBase):
                         "variant": "tonal",
                         "size": "small",
                         "class": "mr-2",
-                        "text": f"{display['label']} {counts[status]}",
                     },
+                    "text": f"{display['label']} {counts[status]}",
                 }
             )
         return {
@@ -1483,7 +1503,6 @@ class SubscribeDownloadAttr(_PluginBase):
         self._enabled = False
         self._config = None
         self._config_issues = ()
-        self._category_rules_source = None
         self._directories = ()
         self._directory_keys = None
         self._host_issues = ()
