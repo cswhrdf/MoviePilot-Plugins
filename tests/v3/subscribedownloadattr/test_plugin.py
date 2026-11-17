@@ -156,6 +156,14 @@ def _form_row_containing(form: Any, target: dict[str, Any]) -> dict[str, Any] | 
     return None
 
 
+def _form_panel_body(panel: dict[str, Any]) -> dict[str, Any]:
+    """返回目录面板唯一的展开内容节点."""
+    bodies = _form_components(panel, "VExpansionPanelText")
+    assert len(bodies) == 1
+    assert panel["content"] == bodies
+    return bodies[0]
+
+
 def _form_component_by_model(form: Any, model: str) -> dict[str, Any]:
     """按 model 绑定路径取首个组件节点, 不存在直接失败."""
     for node in _walk_form(form):
@@ -485,18 +493,22 @@ def test_form_directory_rows_follow_host_config(monkeypatch):
     assert {path.split(".", 1)[0] for path in models} == set(EXPECTED_CONFIG_KEYS)
     assert len(models) == len(set(models))
 
-    directory_rows = [
-        node["props"]["text"]
-        for node in _form_components(form, "VAlert")
-        if isinstance(node["props"].get("text"), str) and node["props"]["text"].startswith("目录 #")
+    panels = _form_components(form, "VExpansionPanel")
+    directory_titles = [panel["props"]["title"] for panel in panels]
+    assert directory_titles == [
+        "#1 · 电影",
+        "#2 · 电视剧",
+        "#3 · 电视剧副本 · 电影 / 动画 · 不生效",
     ]
-    assert [text.split("：", 1)[0] for text in directory_rows] == ["目录 #1", "目录 #2", "目录 #3"]
-    # 说明行只保留目录名、媒体类型/类别（有值才显示）与下载路径
-    assert directory_rows[0] == "目录 #1：电影｜下载路径：/mnt/media:/movie"
-    assert directory_rows[1] == "目录 #2：电视剧｜下载路径：/mnt/media:/tv"
-    assert directory_rows[2] == "目录 #3：电视剧副本｜电影 / 动画｜下载路径：/mnt/media:/tv"
-    for text in directory_rows:
-        for jargon in ("storage/download_path", "media_type/media_category", "priority", "匹配标识", "/-"):
+    directory_alerts = [_form_panel_body(panel)["content"][0] for panel in panels]
+    assert [alert["props"]["text"].split("；", 1)[0] for alert in directory_alerts] == [
+        "下载路径：/mnt/media:/movie",
+        "下载路径：/mnt/media:/tv",
+        "下载路径：/mnt/media:/tv",
+    ]
+    # 面板标题与说明只展示目录名、可选媒体信息和下载路径, 不泄露内部术语
+    for text in [*directory_titles, *(alert["props"]["text"] for alert in directory_alerts)]:
+        for jargon in ("storage/download_path", "media_type/media_category", "priority", "匹配标识", "规则键"):
             assert jargon not in text
 
     page_text = _form_text(form)
@@ -516,7 +528,7 @@ def test_form_directory_rows_follow_host_config(monkeypatch):
 
 
 def test_form_directory_row_separates_description_and_inputs(monkeypatch):
-    """目录说明独占整行, 输入另起一行: 说明列 cols/md=12, 分类 4/标签 8, 失效键整行警告且无输入.
+    """目录面板内说明与输入相邻, 分类 4/标签 8, 非生效目录只有合并警告且无输入.
 
     同时校验输入提示面向用户, 不暴露内部匹配标识与目录 path。
     """
@@ -539,41 +551,31 @@ def test_form_directory_row_separates_description_and_inputs(monkeypatch):
 
     form, _ = plugin.get_form()
     assert json.loads(json.dumps(form)) == form
-    content = form[0]["content"]
+    panels = _form_components(form, "VExpansionPanel")
+    assert len(panels) == 3
+    bodies = [_form_panel_body(panel) for panel in panels]
+    descriptions = [body["content"][0] for body in bodies]
+    assert [node["component"] for node in descriptions] == ["VAlert"] * 3
+    assert [node["props"]["type"] for node in descriptions] == ["info", "info", "warning"]
+    # 标题与说明不暴露内部匹配标识、priority、规则键或宿主字段名
+    for panel, node in zip(panels, descriptions, strict=True):
+        for text in (panel["props"]["title"], node["props"]["text"]):
+            assert "匹配标识" not in text
+            assert "priority" not in text
+            assert "storage/download_path" not in text
+            assert "media_type/media_category" not in text
+            assert "规则键" not in text
+        assert node["props"]["text"].startswith("下载路径：")
+        assert node["props"]["variant"] == "tonal"
+        assert node["props"]["density"] == "compact"
 
-    def row_index(row: dict[str, Any]) -> int:
-        """返回组件行在 VForm 直属 content 中的位置（按身份判定）."""
-        return next(index for index, item in enumerate(content) if item is row)
-
-    descriptions = [
-        node
-        for node in _form_components(form, "VAlert")
-        if isinstance(node["props"].get("text"), str) and node["props"]["text"].startswith("目录 #")
-    ]
-    assert [node["props"]["text"].split("：", 1)[0] for node in descriptions] == ["目录 #1", "目录 #2", "目录 #3"]
-    # 说明行只讲用户能看到的目录名与下载路径, 不暴露内部匹配标识、priority 或宿主字段名
-    for node in descriptions:
-        text = node["props"]["text"]
-        assert "匹配标识" not in text
-        assert "priority" not in text
-        assert "storage/download_path" not in text
-        assert "media_type/media_category" not in text
-        assert "下载路径：" in text
-        assert "规则键" not in text
-
-    # 每条说明独占一行: 该行只有一个整行 VCol 包裹说明 VAlert, 不夹带任何输入控件
-    description_rows: list[dict[str, Any]] = []
-    for node in descriptions:
-        row = _form_row_containing(form, node)
-        assert row is not None
-        assert row["content"] == [{"component": "VCol", "props": {"cols": 12, "md": 12}, "content": [node]}]
-        description_rows.append(row)
-
-    # 生效目录: 分类/标签落在同一输入行, 与说明行相邻且宽度 4/8, model 绑定不变
+    # 生效目录: 说明 VAlert 与输入行是展开体内仅有的相邻节点, 分类/标签宽度为 4/8
     category = _form_component_by_model(form, "directory_rules./mnt/media:/tv.category")
     tags = _form_component_by_model(form, "directory_rules./mnt/media:/tv.tags")
     assert category["component"] == "VTextField"
     assert tags["component"] == "VCombobox"
+    assert category["props"]["density"] == "compact"
+    assert tags["props"]["density"] == "compact"
     # 输入提示可直接操作, 且不含内部匹配标识/内部 path, 也不承诺移动下载目录
     category_hint = category["props"]["hint"]
     tags_hint = tags["props"]["hint"]
@@ -587,26 +589,23 @@ def test_form_directory_row_separates_description_and_inputs(monkeypatch):
     input_row = _form_row_containing(form, category)
     assert input_row is not None
     assert input_row is _form_row_containing(form, tags)
+    assert input_row["props"] == {"class": "mt-2"}
+    assert bodies[1]["content"] == [descriptions[1], input_row]
     assert _row_column_props(input_row) == [{"cols": 12, "md": 4}, {"cols": 12, "md": 8}]
     assert [column["content"][0]["props"]["model"] for column in input_row["content"]] == [
         "directory_rules./mnt/media:/tv.category",
         "directory_rules./mnt/media:/tv.tags",
     ]
-    assert input_row is not description_rows[1]
-    assert row_index(input_row) == row_index(description_rows[1]) + 1
 
-    # 重复键的非生效目录: 下一行整行警告, 不提供任何编辑入口
-    warning = next(node for node in _form_components(form, "VAlert") if node["props"].get("title") == "目录规则不生效")
-    # 冲突提示用用户语言说明原因, 不再把内部键写进标题或正文
-    assert "解析为同一规则" in warning["props"]["text"]
-    assert "只在前面的目录中设置分类和标签" in warning["props"]["text"]
-    assert "/mnt/media:/tv" not in warning["props"]["text"]
-    warning_row = _form_row_containing(form, warning)
-    assert warning_row is not None
-    assert warning_row is not description_rows[2]
-    assert _row_column_props(warning_row) == [{"cols": 12, "md": 12}]
-    assert [leaf["component"] for column in warning_row["content"] for leaf in column["content"]] == ["VAlert"]
-    assert row_index(warning_row) == row_index(description_rows[2]) + 1
+    # 重复键的非生效目录只保留一个合并警告, 下载路径与原因共用正文, 不提供任何编辑入口
+    warning = descriptions[2]
+    assert bodies[2]["content"] == [warning]
+    assert warning["props"]["title"] == "目录规则不生效"
+    assert warning["props"]["text"] == (
+        "下载路径：/mnt/media:/tv；与前面的目录对应同一规则，请只在前面的目录中设置分类和标签"
+    )
+    assert _form_components(bodies[2], "VTextField") == []
+    assert _form_components(bodies[2], "VCombobox") == []
     models = _form_models(form)
     assert models.count("directory_rules./mnt/media:/tv.category") == 1
     assert models.count("directory_rules./mnt/media:/tv.tags") == 1
@@ -619,6 +618,50 @@ def test_form_directory_row_separates_description_and_inputs(monkeypatch):
             continue
         assert [node for node in nodes if node["component"] in inputs] == []
         assert _row_column_props(row) == [{"cols": 12, "md": 12}] * len(row["content"])
+
+
+def test_form_directory_panels_have_no_ui_state_or_inactive_inputs(monkeypatch):
+    """折叠目录不污染八键模型, 生效项绑定唯一且非生效项没有输入控件."""
+    _, plugin, _, _ = _prepare(
+        monkeypatch,
+        directories=[
+            _directory("电视剧", "/mnt/media", "/tv", 1),
+            _directory("电视剧副本", "/mnt/media", "/tv", 2),
+        ],
+    )
+    plugin.init_plugin({})
+
+    form, model = plugin.get_form()
+
+    assert tuple(model) == EXPECTED_CONFIG_KEYS
+    assert "directory_page" not in json.dumps(model)
+    models = _form_models(form)
+    assert "directory_page" not in models
+    containers = _form_components(form, "VExpansionPanels")
+    assert len(containers) == 1
+    assert "model" not in containers[0]["props"]
+    panels = _form_components(containers[0], "VExpansionPanel")
+    keys = plugin.directory_keys
+    assert keys is not None
+    assert len(panels) == len(keys["entries"])
+    for panel, entry in zip(panels, keys["entries"], strict=True):
+        # 不设置展开状态 model/value, 由宿主默认全部折叠
+        assert set(panel["props"]) == {"title"}
+        _form_panel_body(panel)
+        key = entry["key"]
+        expected_models = (
+            [f"directory_rules.{key}.category", f"directory_rules.{key}.tags"] if entry["effective"] else []
+        )
+        assert _form_models(panel) == expected_models
+        if not entry["effective"]:
+            assert _form_components(panel, "VTextField") == []
+            assert _form_components(panel, "VCombobox") == []
+    for entry in keys["entries"]:
+        if not entry["effective"]:
+            continue
+        key = entry["key"]
+        assert models.count(f"directory_rules.{key}.category") == 1
+        assert models.count(f"directory_rules.{key}.tags") == 1
 
 
 def test_form_directory_row_key_matches_runtime_key(monkeypatch):
@@ -700,6 +743,14 @@ def test_form_shows_stale_and_conflict_notes(monkeypatch):
     for jargon in ("目录键", "完整键", "priority", "#1", "#2", "/mnt/media"):
         assert jargon not in conflict_text
 
+    # 全局优先级、冲突与失效提示不被目录折叠面板隐藏
+    panel_containers = _form_components(form, "VExpansionPanels")
+    assert len(panel_containers) == 1
+    collapsed_text = _form_text(panel_containers[0])
+    assert "目录规则优先级" not in collapsed_text
+    assert "目录规则冲突" not in collapsed_text
+    assert "已失效目录键" not in collapsed_text
+
     # 失效键仍在默认模型中保留, 保存后可原样回写
     assert model["directory_rules"]["/mnt/media:/old"] == {"category": "旧目录", "tags": []}
     assert tuple(model) == EXPECTED_CONFIG_KEYS
@@ -734,14 +785,13 @@ def test_form_conflict_alert_lists_effective_and_inactive_names(monkeypatch):
     for text in conflicts:
         for jargon in ("目录键", "完整键", "priority", "#1", "#2", "/mnt/media"):
             assert jargon not in text
-    # 说明行同样只用目录名与下载路径, 空名称落到“未命名目录”
-    summaries = [
-        node["props"]["text"]
-        for node in _form_components(form, "VAlert")
-        if node["props"].get("text", "").startswith("目录 #")
-    ]
-    assert summaries[0] == "目录 #1：动画｜下载路径：/mnt/media:/anime"
-    assert summaries[3] == "目录 #4：未命名目录｜下载路径：/mnt/media:/empty"
+    # 面板标题保留目录名, 空名称落到“未命名目录”；说明只写下载路径
+    panels = _form_components(form, "VExpansionPanel")
+    assert panels[0]["props"]["title"] == "#1 · 动画"
+    assert panels[3]["props"]["title"] == "#4 · 未命名目录"
+    descriptions = [_form_panel_body(panel)["content"][0]["props"]["text"] for panel in panels]
+    assert descriptions[0] == "下载路径：/mnt/media:/anime"
+    assert descriptions[3] == "下载路径：/mnt/media:/empty"
 
 
 def test_get_form_empty_directories_and_no_side_effects(monkeypatch):
@@ -760,6 +810,7 @@ def test_get_form_empty_directories_and_no_side_effects(monkeypatch):
     page_text = _form_text(form)
     assert "当前宿主目录配置中没有 download_path 非空的目录" in page_text
     assert "默认分类" in page_text and "目录规则优先级" in page_text
+    assert _form_components(form, "VExpansionPanels") == []
 
     assert len(oper.calls) == calls_before
     assert store.get_calls == [] and store.save_calls == []

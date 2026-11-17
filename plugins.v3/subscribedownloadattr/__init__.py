@@ -998,10 +998,10 @@ class SubscribeDownloadAttr(_PluginBase):
     def get_form(self) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """返回配置页 JSON 与默认配置模型.
 
-        表单分三块：基础开关与触发来源、默认规则、按宿主实时目录生成的目录规则行；只读
+        表单分三块：基础开关与触发来源、默认规则、按宿主实时目录生成的目录规则面板；只读
         提示（配置/宿主 issue、失效目录键、完整键冲突、优先级说明）只作为页面组件出现，
-        不进入默认模型。目录规则区每个目录占两行：整行只读说明在上，分类/标签输入另起
-        一行，说明不与输入共享行。目录行与规则键
+        不进入默认模型。目录规则区每个目录使用一个默认折叠面板，标题只展示目录摘要，
+        展开后显示下载路径与分类/标签输入；不生效目录只显示合并警告。目录面板与规则键
         全部取自最近一次 ``init_plugin`` 生成的 ``_directories`` / ``_directory_keys``，
         本方法不重新读取、不重新排序、也不写回宿主配置或下载器。
 
@@ -1205,7 +1205,7 @@ class SubscribeDownloadAttr(_PluginBase):
         return alerts
 
     def _form_directory_sections(self, normalized: Mapping[str, Any]) -> list[dict[str, Any]]:
-        """生成目录规则区：优先级说明、冲突/失效提示与逐目录编辑行."""
+        """生成目录规则区：全局提示与默认折叠的逐目录编辑面板."""
         raw_entries = (self._directory_keys or {}).get("entries")
         entries: list[dict[str, Any]] = []
         if isinstance(raw_entries, (list, tuple)):
@@ -1224,8 +1224,16 @@ class SubscribeDownloadAttr(_PluginBase):
                 }
             )
             return sections
-        for entry in entries:
-            sections.extend(self._form_directory_row(entry, self._directory_snapshot(entry.get("sequence"))))
+        sections.append(
+            {
+                "component": "VExpansionPanels",
+                "props": {"class": "mb-4"},
+                "content": [
+                    self._form_directory_row(entry, self._directory_snapshot(entry.get("sequence")))
+                    for entry in entries
+                ],
+            }
+        )
         return sections
 
     def _directory_snapshot(self, sequence: Any) -> Mapping[str, Any]:
@@ -1238,111 +1246,93 @@ class SubscribeDownloadAttr(_PluginBase):
         return {}
 
     @staticmethod
-    def _form_directory_summary(entry: Mapping[str, Any], source: Mapping[str, Any]) -> str:
-        """生成一行用户可读的目录说明: 目录名、宿主媒体类型/类别与下载路径.
+    def _form_directory_location(entry: Mapping[str, Any]) -> str:
+        """返回目录的下载位置, 不展示内部规则键或宿主字段名."""
+        storage = str(entry.get("storage") or "").strip()
+        download_path = str(entry.get("download_path") or "").strip()
+        return f"{storage}:{download_path}" if storage else download_path
 
-        priority 仍只用于排序, 匹配标识仍只用于模型绑定与冲突判断, 都不在说明行展示;
-        媒体类型/类别缺失时整段省略, 不用 ``-`` 占位.
-
-        Returns:
-            形如 ``目录 #1：动画｜电视剧 / 日番｜下载路径：local:/data/downloads/番剧`` 的一行文本.
-
-        """
+    @staticmethod
+    def _form_directory_title(entry: Mapping[str, Any], source: Mapping[str, Any]) -> str:
+        """生成折叠面板短标题: 序号、目录名、可选媒体信息与生效状态."""
         name = str(entry.get("name") or "").strip() or "未命名目录"
         media_type = str(source.get("media_type") or "").strip()
         media_category = str(source.get("media_category") or "").strip()
         media = " / ".join(part for part in (media_type, media_category) if part)
-        storage = str(entry.get("storage") or "").strip()
-        download_path = str(entry.get("download_path") or "").strip()
-        location = f"{storage}:{download_path}" if storage else download_path
-        segments = [f"目录 #{entry.get('sequence')}：{name}"]
+        segments = [f"#{entry.get('sequence')} · {name}"]
         if media:
             segments.append(media)
-        if location:
-            segments.append(f"下载路径：{location}")
-        return "｜".join(segments)
+        if not entry.get("effective"):
+            segments.append("不生效")
+        return " · ".join(segments)
 
     @staticmethod
-    def _form_directory_row(entry: Mapping[str, Any], source: Mapping[str, Any]) -> list[dict[str, Any]]:
-        """按一条目录键条目生成两块整行组件：只读说明行 + 输入行或不生效提示行.
-
-        说明与输入不再共享同一 ``VRow``：说明独占整行（``cols=12/md=12``），
-        输入区另起一行，避免窄屏下说明文字与输入控件左右挤压、频繁断行。
-        非生效条目只给出整行只读提示，不渲染任何输入控件。
-
-        Returns:
-            该目录条目的 ``VRow`` 列表, 顺序为先说明行、后输入/提示行。
-
-        """
+    def _form_directory_row(entry: Mapping[str, Any], source: Mapping[str, Any]) -> dict[str, Any]:
+        """按一条目录键条目生成默认折叠面板, 非生效条目不提供输入控件."""
         key = str(entry.get("key") or "")
-        summary = SubscribeDownloadAttr._form_directory_summary(entry, source)
-        description_row: dict[str, Any] = {
-            "component": "VRow",
-            "content": [
-                _form_col(
-                    "VAlert",
-                    {"type": "info", "variant": "tonal", "density": "compact", "text": summary},
-                    cols=12,
-                    md=12,
-                )
-            ],
-        }
+        location = SubscribeDownloadAttr._form_directory_location(entry)
         if not entry.get("effective"):
-            return [
-                description_row,
+            body = [
+                _form_component(
+                    "VAlert",
+                    {
+                        "type": "warning",
+                        "variant": "tonal",
+                        "density": "compact",
+                        "title": "目录规则不生效",
+                        "text": (f"下载路径：{location}；与前面的目录对应同一规则，请只在前面的目录中设置分类和标签"),
+                    },
+                )
+            ]
+        else:
+            body = [
+                _form_component(
+                    "VAlert",
+                    {
+                        "type": "info",
+                        "variant": "tonal",
+                        "density": "compact",
+                        "text": f"下载路径：{location}",
+                    },
+                ),
                 {
                     "component": "VRow",
+                    "props": {"class": "mt-2"},
                     "content": [
                         _form_col(
-                            "VAlert",
+                            "VTextField",
                             {
-                                "type": "warning",
-                                "variant": "tonal",
+                                "model": f"{DIRECTORY_RULE_PREFIX}.{key}.category",
+                                "label": "目录分类",
                                 "density": "compact",
-                                "title": "目录规则不生效",
-                                "text": (
-                                    "此目录与前面的目录解析为同一规则，请只在前面的目录中设置分类和标签；"
-                                    "同一匹配标识按 priority 升序首条生效，本行不提供编辑入口"
-                                ),
+                                "hint": "填写 qBittorrent 分类名称，例如：电视剧、动漫；留空则不修改分类",
                             },
                             cols=12,
-                            md=12,
-                        )
+                            md=4,
+                        ),
+                        _form_col(
+                            "VCombobox",
+                            {
+                                "model": f"{DIRECTORY_RULE_PREFIX}.{key}.tags",
+                                "label": "目录标签",
+                                "density": "compact",
+                                "multiple": True,
+                                "chips": True,
+                                "closable-chips": True,
+                                "clearable": True,
+                                "hint": "回车添加标签，可添加多个；留空则不修改标签",
+                            },
+                            cols=12,
+                            md=8,
+                        ),
                     ],
                 },
             ]
-        return [
-            description_row,
-            {
-                "component": "VRow",
-                "content": [
-                    _form_col(
-                        "VTextField",
-                        {
-                            "model": f"{DIRECTORY_RULE_PREFIX}.{key}.category",
-                            "label": "目录分类",
-                            "hint": "填写 qBittorrent 分类名称，例如：电视剧、动漫；留空则不修改分类",
-                        },
-                        cols=12,
-                        md=4,
-                    ),
-                    _form_col(
-                        "VCombobox",
-                        {
-                            "model": f"{DIRECTORY_RULE_PREFIX}.{key}.tags",
-                            "label": "目录标签",
-                            "multiple": True,
-                            "chips": True,
-                            "closable-chips": True,
-                            "clearable": True,
-                            "hint": "回车添加标签，可添加多个；留空则不修改标签",
-                        },
-                        cols=12,
-                        md=8,
-                    ),
-                ],
-            },
-        ]
+        return {
+            "component": "VExpansionPanel",
+            "props": {"title": SubscribeDownloadAttr._form_directory_title(entry, source)},
+            "content": [{"component": "VExpansionPanelText", "content": body}],
+        }
 
     @staticmethod
     def _form_default_model(normalized: Mapping[str, Any]) -> dict[str, Any]:
