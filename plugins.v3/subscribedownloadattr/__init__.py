@@ -240,6 +240,11 @@ class SubscribeDownloadAttr(_PluginBase):
         self._host_issues = tuple(tag_issues + directory_issues)
         for issue in self._host_issues:
             logger.warning(f"[{self.plugin_name}] {issue}")
+        logger.info(
+            f"[{self.plugin_name}] 初始化完成：enabled={self._enabled}，目录 {len(directories)} 条，"
+            f"有效规则键 {len((keys or {}).get('effective_keys') or ())} 个"
+        )
+        logger.debug(f"[{self.plugin_name}] 规范化配置：{normalized}")
 
     @property
     def config_issues(self) -> tuple[str, ...]:
@@ -451,15 +456,17 @@ class SubscribeDownloadAttr(_PluginBase):
 
         处理器自身吞掉全部异常，任何时候都不向宿主事件总线抛出，避免打断订阅与下载。
         """
+        logger.debug(f"[{self.plugin_name}] 收到 DownloadAdded 事件")
         try:
             self._handle_download_added(event)
         except Exception as err:  # 插件异常绝不打断宿主订阅与下载
-            logger.warning(f"[{self.plugin_name}] 处理 DownloadAdded 事件失败：{err}")
+            logger.error(f"[{self.plugin_name}] 处理 DownloadAdded 事件失败：{err}")
             self._record_exception_failure(event, err)
 
     def _handle_download_added(self, event: Any) -> None:
         """执行 DownloadAdded 的判定与写入流程, 每一步都产生可展示的记录."""
         if not self._enabled:
+            logger.debug(f"[{self.plugin_name}] 插件未启用，忽略 DownloadAdded 事件")
             return
 
         now = self._now()
@@ -468,10 +475,12 @@ class SubscribeDownloadAttr(_PluginBase):
         if prepared is None:
             return
         hash_value, title, context, media_info, config = prepared
+        logger.info(f"[{self.plugin_name}] 处理下载任务：hash={hash_value}，标题={title}")
 
         self._warn_directory_conflicts()
         entry, reason = self._resolve_event_directory(media_info, context)
         if entry is None:
+            logger.debug(f"[{self.plugin_name}] 目录未命中：{reason or '未找到可用的下载目录'}")
             self._record_skip(
                 now=now,
                 hash_value=hash_value,
@@ -481,6 +490,7 @@ class SubscribeDownloadAttr(_PluginBase):
             return
 
         key = entry["key"]
+        logger.debug(f"[{self.plugin_name}] 目录解析命中：key={key}")
         self._apply_match(
             now=now,
             payload=payload,
@@ -512,6 +522,9 @@ class SubscribeDownloadAttr(_PluginBase):
         category = rule["category"] if config["apply_category"] else ""
         tags = list(rule["tags"]) if config["apply_tags"] else []
         if not match["matched"]:
+            logger.debug(
+                f"[{self.plugin_name}] 任务 {hash_value} 未命中有效规则（层级 {level} 无分类与标签），跳过写入"
+            )
             self._record_skip(
                 now=now,
                 hash_value=hash_value,
@@ -524,6 +537,7 @@ class SubscribeDownloadAttr(_PluginBase):
             )
             return
         if not category and not tags:
+            logger.debug(f"[{self.plugin_name}] 任务 {hash_value} 分类与标签写入均被配置关闭，跳过写入")
             self._record_skip(
                 now=now,
                 hash_value=hash_value,
@@ -534,6 +548,10 @@ class SubscribeDownloadAttr(_PluginBase):
             )
             return
         if config["dry_run"]:
+            logger.info(
+                f"[{self.plugin_name}] 任务 {hash_value} dry_run：拟写入分类 {category or '-'}、"
+                f"标签 {tags or '-'}，未调用下载器"
+            )
             self._record(
                 now=now,
                 hash_value=hash_value,
@@ -554,7 +572,12 @@ class SubscribeDownloadAttr(_PluginBase):
         status = self._aggregate_status(results)
         reason_text = "；".join(note for note in notes if note)
         if status == WriterStatus.FAILED.value:
-            logger.warning(f"[{self.plugin_name}] 任务 {hash_value} 写入失败：{reason_text}")
+            logger.error(f"[{self.plugin_name}] 任务 {hash_value} 写入失败：{reason_text}")
+        else:
+            logger.info(
+                f"[{self.plugin_name}] 任务 {hash_value} 写入完成：status={status}，"
+                f"分类={category or '-'}，标签={tags or '-'}"
+            )
         self._record(
             now=now,
             hash_value=hash_value,
@@ -575,14 +598,17 @@ class SubscribeDownloadAttr(_PluginBase):
     ) -> tuple[str, str, Any, Any, dict[str, Any]] | None:
         """执行 payload、hash、来源、媒体与去重的前置判定, 需跳过时写记录并返回 None."""
         if not isinstance(payload, Mapping):
+            logger.debug(f"[{self.plugin_name}] 跳过事件：payload 不是对象")
             self._record_skip(now=now, hash_value="", title="", reason="事件 payload 不是对象，已跳过")
             return None
         hash_value = _text(payload.get("hash"))
         if not hash_value:
+            logger.debug(f"[{self.plugin_name}] 跳过事件：payload 缺少任务 hash")
             self._record_skip(now=now, hash_value="", title="", reason="事件缺少任务 hash，已跳过")
             return None
         config = self._config_snapshot()
         if config["trigger"] == "subscribe" and not _text(payload.get("source")).startswith(SUBSCRIPTION_SOURCE_PREFIX):
+            logger.debug(f"[{self.plugin_name}] 跳过任务 {hash_value}：非订阅来源")
             self._record_skip(
                 now=now,
                 hash_value=hash_value,
@@ -594,6 +620,7 @@ class SubscribeDownloadAttr(_PluginBase):
         media_info = self._context_value(context, "media_info")
         snapshot = self._media_snapshot(media_info)
         if snapshot is None:
+            logger.debug(f"[{self.plugin_name}] 跳过任务 {hash_value}：媒体信息缺失或类型为空")
             self._record_skip(
                 now=now,
                 hash_value=hash_value,
@@ -603,6 +630,7 @@ class SubscribeDownloadAttr(_PluginBase):
             return None
         title = _text(snapshot.get("title"))
         if self._is_seen(hash_value, now):
+            logger.debug(f"[{self.plugin_name}] 跳过任务 {hash_value}：7 天内已处理，本次不重复写入")
             self._record_skip(
                 now=now,
                 hash_value=hash_value,
@@ -663,6 +691,10 @@ class SubscribeDownloadAttr(_PluginBase):
                 read = writer.read_tags_ex([hash_value])
             except Exception as err:  # 读取异常与读取失败同义：不盲写
                 read = TagReadResult({}, WriterResult(WriterStatus.FAILED, f"读取任务标签抛异常：{err}"))
+            logger.debug(
+                f"[{self.plugin_name}] 读取任务 {hash_value} 原标签：status={read.result.status.value}，"
+                f"tags={read.tags}，reason={read.result.reason or '-'}"
+            )
             if read.result.status is WriterStatus.FAILED:
                 results.append(read.result)
                 notes.append(read.result.reason)
@@ -675,10 +707,18 @@ class SubscribeDownloadAttr(_PluginBase):
                     system_tag=self.system_tag,
                 )
                 result = self._call_writer(writer.add_tags, [hash_value], merged)
+                logger.debug(
+                    f"[{self.plugin_name}] 调用 add_tags：hash={hash_value}，原标签={base}，"
+                    f"合并后={merged}，结果={result.describe()}"
+                )
                 results.append(result)
                 notes.append(result.reason)
             else:
                 result = self._call_writer(writer.add_tags, [hash_value], tags)
+                logger.debug(
+                    f"[{self.plugin_name}] 原标签不可读（{read.result.reason}），调用 add_tags："
+                    f"hash={hash_value}，标签={tags}，结果={result.describe()}"
+                )
                 if result.ok:
                     result = WriterResult(
                         WriterStatus.UNSUPPORTED,
@@ -696,13 +736,18 @@ class SubscribeDownloadAttr(_PluginBase):
         if category:
             # 能力探测确定为不支持时不调用分类写入，但仍记 unsupported 供详情页展示；
             # 回退通道返回 None（类型未知）时照常调用，以实际结果为准。
-            if getattr(writer, "supports_category", None) is False:
+            supported = getattr(writer, "supports_category", None)
+            if supported is False:
                 result = WriterResult(
                     WriterStatus.UNSUPPORTED,
                     f"下载器不支持分类写入，已跳过分类 {category}",
                 )
             else:
                 result = self._call_writer(writer.set_category, hash_value, category)
+            logger.debug(
+                f"[{self.plugin_name}] 分类写入：supports_category={supported}，hash={hash_value}，"
+                f"分类={category}，结果={result.describe()}"
+            )
             results.append(result)
             notes.append(result.reason)
         return results, notes
@@ -964,6 +1009,10 @@ class SubscribeDownloadAttr(_PluginBase):
             self.save_data(SEEN_KEY, kept_seen)
         except Exception as err:  # 持久化失败不抛给事件层，内存缓存已保留本次结果
             logger.warning(f"[{self.plugin_name}] 保存处理记录失败，本次结果只保留在内存：{err}")
+        else:
+            logger.debug(
+                f"[{self.plugin_name}] 处理记录与去重表已保存：{len(kept_records)} 条记录，{len(kept_seen)} 条去重"
+            )
 
     def get_state(self) -> bool:
         """返回插件当前启用状态.

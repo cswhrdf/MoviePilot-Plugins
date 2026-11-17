@@ -881,14 +881,29 @@ class _FakeSystemConfig:
 
 
 class _FakeLogger:
-    """伪宿主 logger: 只记录 warning 文本, 不落盘."""
+    """伪宿主 logger: 按级别记录日志文本, 不落盘."""
 
     def __init__(self) -> None:
         self.warnings: list[str] = []
+        self.infos: list[str] = []
+        self.debugs: list[str] = []
+        self.errors: list[str] = []
 
     def warning(self, message: Any, *args: Any, **kwargs: Any) -> None:
         """记录一条告警文本."""
         self.warnings.append(str(message))
+
+    def info(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        """记录一条 info 文本."""
+        self.infos.append(str(message))
+
+    def debug(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        """记录一条 debug 文本."""
+        self.debugs.append(str(message))
+
+    def error(self, message: Any, *args: Any, **kwargs: Any) -> None:
+        """记录一条 error 文本."""
+        self.errors.append(str(message))
 
 
 class _FakeDirectoryHelper:
@@ -1458,7 +1473,7 @@ def test_disabled_short_circuit(monkeypatch):
 
 def test_trigger_subscribe_filters_source(monkeypatch):
     """trigger=subscribe 时非订阅来源 skipped 且不写, 订阅来源正常处理."""
-    module, plugin, _, store = _prepare_event(monkeypatch, config=_hit_config(trigger="subscribe"))
+    module, plugin, fake_logger, store = _prepare_event(monkeypatch, config=_hit_config(trigger="subscribe"))
     writer = _FakeWriter()
     writer_calls = _install_writer(module, monkeypatch, writer)
     _FakeDirectoryHelper.reset(result=_tv_directory())
@@ -1477,11 +1492,12 @@ def test_trigger_subscribe_filters_source(monkeypatch):
     assert writer_calls == ["qbittorrent"]
     assert writer.tag_calls == [(["subscribed"], ["tv"])]
     assert _records(store)[-1]["status"] == "ok"
+    assert any("写入完成" in message and "subscribed" in message for message in fake_logger.infos)
 
 
 def test_dry_run_no_writer_calls(monkeypatch):
     """dry_run=true 不取 writer、不读标签、不写, 但记录 dry_run 与拟写入值."""
-    module, plugin, _, store = _prepare_event(monkeypatch, config=_hit_config(dry_run=True))
+    module, plugin, fake_logger, store = _prepare_event(monkeypatch, config=_hit_config(dry_run=True))
     writer = _FakeWriter()
     writer_calls = _install_writer(module, monkeypatch, writer)
     _FakeDirectoryHelper.reset(result=_tv_directory())
@@ -1498,6 +1514,10 @@ def test_dry_run_no_writer_calls(monkeypatch):
     assert record["tags"] == ["tv"]
     assert "dry_run" in record["reason"]
     assert _seen(store) == {"h1": record["time"]}
+    # 关键节点留下 info 日志，便于排障
+    assert any("dry_run" in message and "h1" in message for message in fake_logger.infos)
+    assert any("初始化完成" in message for message in fake_logger.infos)
+    assert fake_logger.debugs
 
 
 def test_event_handler_swallows_write_error(monkeypatch):
@@ -1512,7 +1532,7 @@ def test_event_handler_swallows_write_error(monkeypatch):
     record = _records(store)[-1]
     assert record["status"] == "failed"
     assert "rpc down" in record["reason"]
-    assert any("写入失败" in message and "rpc down" in message for message in fake_logger.warnings)
+    assert any("写入失败" in message and "rpc down" in message for message in fake_logger.errors)
     # 写入失败不登记 seen, 便于宿主重投或修正配置后重试
     assert _seen(store) == {}
 
@@ -1532,7 +1552,7 @@ def test_writer_factory_error_is_contained(monkeypatch):
     record = _records(store)[-1]
     assert record["status"] == "failed"
     assert "service registry unavailable" in record["reason"]
-    assert any("处理 DownloadAdded 事件失败" in message for message in fake_logger.warnings)
+    assert any("处理 DownloadAdded 事件失败" in message for message in fake_logger.errors)
 
 
 # ---------------- DownloadAdded 事件处理：去重与记录上限 ----------------
@@ -1831,7 +1851,7 @@ def test_exception_fallback_records_failed(monkeypatch):
     assert record["status"] == "failed"
     assert record["hash"] == "err"
     assert "boom" in record["reason"]
-    assert any("处理 DownloadAdded 事件失败" in message for message in fake_logger.warnings)
+    assert any("处理 DownloadAdded 事件失败" in message for message in fake_logger.errors)
     assert _seen(store) == {}
 
 
@@ -1851,7 +1871,7 @@ def test_exception_fallback_does_not_recurse(monkeypatch):
     plugin.on_download_added(_event("err"))
 
     assert plugin._reporting_failure is False
-    assert any("处理 DownloadAdded 事件失败" in message and "boom" in message for message in fake_logger.warnings)
+    assert any("处理 DownloadAdded 事件失败" in message and "boom" in message for message in fake_logger.errors)
     assert any("记录事件处理异常失败" in message and "record down" in message for message in fake_logger.warnings)
     assert store.save_calls == []
 

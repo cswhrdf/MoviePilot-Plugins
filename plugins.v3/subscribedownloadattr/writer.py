@@ -250,6 +250,7 @@ class _InstanceWriter(_RetryWriter):
             tags = reader(wanted)
         except Exception as err:  # 读取失败只降级为空数据 + 原因
             return TagReadResult({}, WriterResult(WriterStatus.FAILED, f"读取标签失败：{err}"))
+        logger.debug(f"[订阅下载分类与标签] 读取标签：type={kind}，hash={wanted}，结果={tags}")
         return TagReadResult(tags, WriterResult(WriterStatus.OK, f"读取 {len(tags)} 个任务的标签"))
 
     def _read_qbittorrent_tags(self, hashs: list[str]) -> dict[str, list[str]]:
@@ -286,6 +287,7 @@ class _InstanceWriter(_RetryWriter):
         kind = self._capabilities.kind
         if not self._capabilities.can_add_tags:
             return WriterResult(WriterStatus.UNSUPPORTED, f"{kind} 实例缺少写入标签的方法")
+        logger.debug(f"[订阅下载分类与标签] 调用 add_tags：type={kind}，hash={wanted}，标签={wanted_tags}")
         return self._with_retry("写入标签", lambda: self._write_tags(wanted, wanted_tags))
 
     def _write_tags(self, hashs: list[str], tags: list[str]) -> WriterResult:
@@ -338,6 +340,7 @@ class _InstanceWriter(_RetryWriter):
         kind = self._capabilities.kind
         if not self._capabilities.can_set_category:
             return WriterResult(WriterStatus.UNSUPPORTED, f"{kind} 不支持分类写入，仅标签可用")
+        logger.debug(f"[订阅下载分类与标签] 调用 set_category：type={kind}，hash={key}，分类={text}")
         return self._with_retry("写入分类", lambda: self._write_category(key, text))
 
     def _write_category(self, hash_value: str, category: str) -> WriterResult:
@@ -390,6 +393,9 @@ class _ChainWriter(_RetryWriter):
             return WriterResult(WriterStatus.SKIPPED, "标签或任务 hash 为空，未调用下载器")
         if self._chain is None:
             return WriterResult(WriterStatus.FAILED, "回退通道不可用，未写入标签")
+        logger.debug(
+            f"[订阅下载分类与标签] 回退通道 add_tags：downloader={self._downloader}，hash={wanted}，标签={wanted_tags}"
+        )
         return self._with_retry("写入标签", lambda: self._write_tags(wanted, wanted_tags))
 
     def _write_tags(self, hashs: list[str], tags: list[str]) -> WriterResult:
@@ -409,6 +415,9 @@ class _ChainWriter(_RetryWriter):
             return WriterResult(WriterStatus.SKIPPED, "任务 hash 为空，未调用分类写入")
         if self._chain is None:
             return WriterResult(WriterStatus.FAILED, "回退通道不可用，未写入分类")
+        logger.debug(
+            f"[订阅下载分类与标签] 回退通道 set_category：downloader={self._downloader}，hash={key}，分类={text}"
+        )
         return self._with_retry("写入分类", lambda: self._write_category(key, text))
 
     def _write_category(self, hash_value: str, category: str) -> WriterResult:
@@ -533,5 +542,9 @@ def resolve_writer(
     type_name = _text(getattr(info, "type", None)).lower() if info is not None else ""
     if instance is not None and type_name in SUPPORTED_TYPES:
         capabilities = _cached_capabilities(downloader_name, instance, type_name)
+        logger.debug(
+            f"[订阅下载分类与标签] 命中下载器实例：name={downloader_name}，type={type_name}，"
+            f"capabilities={capabilities}"
+        )
         return _InstanceWriter(instance, capabilities, sleep=sleep, retry_delays=retry_delays)
     return _ChainWriter(_build_chain(chain_factory), downloader_name, sleep=sleep, retry_delays=retry_delays)
