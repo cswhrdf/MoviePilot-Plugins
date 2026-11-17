@@ -291,7 +291,7 @@ def test_normalize_config_flat_default_rule_fills_empty_nested():
 
 
 def test_normalize_config_flat_conflicts_nested_wins():
-    """嵌套与扁平两处都有值时以嵌套为准并记 issue."""
+    """嵌套与扁平两处都有不同值时以嵌套为准并记 issue."""
     normalized, issues = rules.normalize_config(
         {
             "default_rule": {"category": "电影", "tags": ["A"]},
@@ -306,7 +306,52 @@ def test_normalize_config_flat_conflicts_nested_wins():
     assert normalized["default_rule"] == {"category": "电影", "tags": ["A"]}
     assert normalized["directory_rules"] == {"/mnt:/tv": {"category": "电视剧", "tags": ["tv"]}}
     assert len(issues) == 3
-    assert all("以嵌套为准" in issue for issue in issues)
+    assert all("已以表单中的值为准" in issue for issue in issues)
+    # 面向用户的文案不使用嵌套/扁平等技术术语
+    assert all("嵌套" not in issue and "扁平" not in issue for issue in issues)
+    assert any("默认分类" in issue for issue in issues)
+    assert any("默认标签" in issue for issue in issues)
+    assert any("/mnt:/tv" in issue for issue in issues)
+
+
+def test_normalize_config_flat_same_value_is_silent():
+    """宿主同时写入嵌套与扁平同名值时视为同一配置, 不报冲突."""
+    normalized, issues = rules.normalize_config(
+        {
+            "default_rule": {"category": "", "tags": ["BT"]},
+            "default_rule.tags": ["BT"],
+        }
+    )
+
+    assert normalized["default_rule"] == {"category": "", "tags": ["BT"]}
+    assert issues == []
+
+
+def test_normalize_config_flat_same_directory_rule_is_silent():
+    """目录规则嵌套与扁平内容相同时不报冲突, 规则保持不变."""
+    normalized, issues = rules.normalize_config(
+        {
+            "directory_rules": {"local:/data/downloads/番剧": {"category": "番剧", "tags": ["anime"]}},
+            "directory_rules.local:/data/downloads/番剧.category": "番剧",
+            "directory_rules.local:/data/downloads/番剧.tags": ["anime"],
+        }
+    )
+
+    assert normalized["directory_rules"] == {"local:/data/downloads/番剧": {"category": "番剧", "tags": ["anime"]}}
+    assert issues == []
+
+
+def test_normalize_config_flat_same_category_is_silent():
+    """默认分类嵌套与扁平值相同时不报冲突."""
+    normalized, issues = rules.normalize_config(
+        {
+            "default_rule": {"category": "番剧", "tags": []},
+            "default_rule.category": "番剧",
+        }
+    )
+
+    assert normalized["default_rule"] == {"category": "番剧", "tags": []}
+    assert issues == []
 
 
 def test_normalize_config_flat_unknown_field_ignored():

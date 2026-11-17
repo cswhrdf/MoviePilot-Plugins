@@ -332,6 +332,8 @@ def _directory_rules_field(raw: Mapping[str, Any], issues: list[str]) -> dict[st
 _DEFAULT_RULE_FLAT_PREFIX = "default_rule."
 _DIRECTORY_RULES_FLAT_PREFIX = "directory_rules."
 _RULE_FIELDS = ("category", "tags")
+# 面向用户的字段称呼: issue 文案不使用嵌套/扁平等技术术语
+_DEFAULT_RULE_LABELS = {"category": "默认分类", "tags": "默认标签"}
 
 
 def _is_empty_rule_value(value: Any) -> bool:
@@ -343,6 +345,24 @@ def _is_empty_rule_value(value: Any) -> bool:
     if isinstance(value, (list, tuple, set, frozenset)):
         return not value
     return False
+
+
+def _same_rule_value(left: Any, right: Any) -> bool:
+    """宽松比较两条规则字段值, 忽略类别首尾空白与标签序列差异."""
+    if isinstance(left, str) and isinstance(right, str):
+        return left.strip() == right.strip()
+    if isinstance(left, (list, tuple, set, frozenset)) and isinstance(right, (list, tuple, set, frozenset)):
+        return _coerce_tags(left, "", []) == _coerce_tags(right, "", [])
+    return left == right
+
+
+def _same_rule(left: Any, right: Any) -> bool:
+    """比较两条规则对象是否语义相同."""
+    if isinstance(left, Mapping) and isinstance(right, Mapping):
+        return _same_rule_value(left.get("category"), right.get("category")) and _same_rule_value(
+            left.get("tags"), right.get("tags")
+        )
+    return left == right
 
 
 def _pop_flat_rules(raw: dict[str, Any], issues: list[str]) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
@@ -371,7 +391,7 @@ def _pop_flat_rules(raw: dict[str, Any], issues: list[str]) -> tuple[dict[str, A
 
 
 def _merge_default_rule(nested: Any, flat: Mapping[str, Any], issues: list[str]) -> Any:
-    """把扁平默认规则字段合并进嵌套默认规则, 嵌套字段非空时以嵌套为准."""
+    """把扁平默认规则字段合并进嵌套默认规则, 值相同时静默, 值不同且嵌套非空时以嵌套为准."""
     if not isinstance(nested, Mapping):
         return dict(flat)
     merged = dict(nested)
@@ -379,20 +399,21 @@ def _merge_default_rule(nested: Any, flat: Mapping[str, Any], issues: list[str])
         current = merged.get(field)
         if _is_empty_rule_value(current):
             merged[field] = value
-        elif not _is_empty_rule_value(value):
-            issues.append(f"配置项 default_rule.{field} 在嵌套与扁平两处都有值，已以嵌套为准")
+        elif not _is_empty_rule_value(value) and not _same_rule_value(current, value):
+            label = _DEFAULT_RULE_LABELS.get(field, field)
+            issues.append(f"检测到「{label}」在配置中存在两处不同值，已以表单中的值为准")
     return merged
 
 
 def _merge_directory_rules(nested: Any, flat: Mapping[str, dict[str, Any]], issues: list[str]) -> Any:
-    """把扁平目录规则合并进嵌套目录规则, 同键以嵌套为准并记 issue."""
+    """把扁平目录规则合并进嵌套目录规则, 同键同值时静默, 同键不同值时以嵌套为准."""
     if not isinstance(nested, Mapping):
         return dict(flat)
     merged = dict(nested)
     for dir_key, rule in flat.items():
-        if dir_key in merged:
-            issues.append(f"目录规则 {dir_key!r} 在嵌套与扁平两处都有值，已以嵌套为准")
-        else:
+        if dir_key in merged and not _same_rule(merged[dir_key], rule):
+            issues.append(f"检测到目录规则「{dir_key}」在配置中存在两处不同值，已以表单中的值为准")
+        elif dir_key not in merged:
             merged[dir_key] = rule
     return merged
 
@@ -405,9 +426,10 @@ def _expand_flat_config(raw: Mapping[str, Any], issues: list[str]) -> dict[str, 
     顶层扁平键。目录键本身可含 ``.`` / ``:`` / ``/``，因此目录规则按「最后一个 ``.``
     之前为目录键、其后为字段名」拆分；字段名只接受 ``category`` / ``tags``。
 
-    展开后扁平键不再保留；同一目录键在嵌套与扁平两处都存在时以嵌套为准并记一条
-    issue；默认规则按字段合并，嵌套字段为空时由扁平值补入，两处都有值且不一致时
-    以嵌套为准并记 issue。
+    展开后扁平键不再保留；同一目录键在嵌套与扁平两处都存在时，规则内容相同则
+    静默，内容不同才以嵌套为准并记一条 issue；默认规则按字段合并，嵌套字段为空时
+    由扁平值补入，两处都有值且不一致时以嵌套为准并记 issue。宿主保存表单时会把同一
+    值同时写成两处，内容相同不视为冲突。
 
     """
     result = dict(raw)
