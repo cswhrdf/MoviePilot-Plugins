@@ -384,20 +384,38 @@ def test_match_rule_priority():
     assert hit["level"] == "default"
 
 
-def test_match_rule_empty_hit_does_not_fall_through():
-    """空命中仍停在目录层级, 不向默认级逐字段回落."""
+def test_match_rule_directory_empty_fields_fall_back_to_default():
+    """目录键命中后逐字段兜底：分类/标签为空分别取默认规则对应字段."""
     config = {
         "default_rule": {"category": "default", "tags": ["default"]},
         "directory_rules": {"/k": {"category": "", "tags": []}},
     }
 
+    # 目录规则两字段都为空 -> 全部回退默认规则, 但仍停在目录级
     hit = rules.match_rule(config, "/k")
     assert hit["level"] == "directory"
-    assert hit["matched"] is False
-    assert hit["rule"] == {"category": "", "tags": []}
-    assert hit["rule_index"] is None
+    assert hit["matched"] is True
+    assert hit["rule"] == {"category": "default", "tags": ["default"]}
 
-    # 目录未配置时落到默认级
+    # 只缺分类 -> 取默认分类, 标签仍用目录值
+    partial_category = {
+        "default_rule": {"category": "default", "tags": ["default"]},
+        "directory_rules": {"/k": {"category": "", "tags": ["tv"]}},
+    }
+    hit = rules.match_rule(partial_category, "/k")
+    assert hit["level"] == "directory"
+    assert hit["rule"] == {"category": "default", "tags": ["tv"]}
+
+    # 只缺标签 -> 取默认标签, 分类仍用目录值
+    partial_tags = {
+        "default_rule": {"category": "default", "tags": ["default"]},
+        "directory_rules": {"/k": {"category": "电视剧", "tags": []}},
+    }
+    hit = rules.match_rule(partial_tags, "/k")
+    assert hit["level"] == "directory"
+    assert hit["rule"] == {"category": "电视剧", "tags": ["default"]}
+
+    # 目录键未命中 -> 默认级, 规则即默认规则
     hit = rules.match_rule(config, "/other")
     assert hit["level"] == "default"
     assert hit["rule"] == {"category": "default", "tags": ["default"]}

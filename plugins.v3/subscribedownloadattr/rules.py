@@ -4,8 +4,8 @@
 下载器，便于配置页、事件处理与单测共用同一套目录键与匹配实现。所有公开入口对错误
 输入都降级处理，不向上抛异常；坏条目的原因写入 ``issues``，由配置页展示。
 
-两级匹配顺序为「目录 → 默认」：目录键命中目录规则时停在目录级（包括空规则），
-目录未命中时使用默认规则。
+两级匹配顺序为「目录 → 默认」：目录键命中目录规则时按字段兜底（分类/标签为空
+分别回退默认规则对应字段），目录未命中时使用默认规则。
 """
 
 from __future__ import annotations
@@ -463,6 +463,13 @@ def _match_result(level: str, rule: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _merge_rule_fields(default_rule: Mapping[str, Any], directory_rule: Mapping[str, Any]) -> dict[str, Any]:
+    """目录规则字段为空时用默认规则兜底, 非空字段以目录规则为准."""
+    category = directory_rule.get("category") or default_rule.get("category") or ""
+    tags = directory_rule.get("tags") or default_rule.get("tags") or []
+    return {"category": category, "tags": list(tags)}
+
+
 def match_rule(config: Any, directory_key: str | None = None) -> dict[str, Any]:
     """按「目录 → 默认」两级顺序匹配规则.
 
@@ -473,18 +480,19 @@ def match_rule(config: Any, directory_key: str | None = None) -> dict[str, Any]:
     Returns:
         含 ``level``（``directory`` / ``default``）、``matched``、``rule``、
         ``rule_index`` 的普通 dict；``rule_index`` 保留字段以兼容记录结构, 两级匹配均
-        固定为 None. 命中空规则仍停在目录级, 不向默认规则逐字段回落.
+        固定为 None. 目录规则命中时按字段兜底：分类/标签为空分别回退默认规则对应字段.
 
     """
     normalized, _ = normalize_config(config)
     key = _text(directory_key)
+    default_rule = normalized["default_rule"]
 
     if key is not None:
         directory_rule = normalized["directory_rules"].get(key)
         if directory_rule is not None:
-            return _match_result("directory", directory_rule)
+            return _match_result("directory", _merge_rule_fields(default_rule, directory_rule))
 
-    return _match_result("default", normalized["default_rule"])
+    return _match_result("default", default_rule)
 
 
 # ---------------- 标签合并 ----------------

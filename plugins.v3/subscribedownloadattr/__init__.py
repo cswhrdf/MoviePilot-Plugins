@@ -78,7 +78,7 @@ PAGE_STATUS_DISPLAY: dict[str, dict[str, Any]] = {
         "hint": "dry_run：只记录拟写入的分类与标签，未调用下载器",
     },
 }
-# 详情页状态图例与状态分布的固定顺序：成功在前, dry_run 在最后
+# 详情页状态分布标签的固定顺序：成功在前, dry_run 在最后
 PAGE_STATUS_ORDER = (
     WriterStatus.OK.value,
     WriterStatus.UNSUPPORTED.value,
@@ -1038,6 +1038,7 @@ class SubscribeDownloadAttr(_PluginBase):
                     "props": {
                         "type": "warning",
                         "variant": "tonal",
+                        "class": "mb-4",
                         "title": title,
                         "text": "\n".join(str(issue) for issue in issues),
                     },
@@ -1051,6 +1052,7 @@ class SubscribeDownloadAttr(_PluginBase):
         return [
             {
                 "component": "VRow",
+                "props": {"class": "mb-3"},
                 "content": [
                     _form_col("VSwitch", {"model": "enabled", "label": "启用插件", "hint": "关闭后不处理任何下载事件"}),
                     _form_col(
@@ -1075,6 +1077,7 @@ class SubscribeDownloadAttr(_PluginBase):
             },
             {
                 "component": "VRow",
+                "props": {"class": "mb-3"},
                 "content": [
                     _form_col("VSwitch", {"model": "apply_tags", "label": "写入标签"}),
                     _form_col("VSwitch", {"model": "apply_category", "label": "写入分类"}),
@@ -1090,6 +1093,7 @@ class SubscribeDownloadAttr(_PluginBase):
             },
             {
                 "component": "VRow",
+                "props": {"class": "mb-4"},
                 "content": [
                     _form_col(
                         "VTextField",
@@ -1125,12 +1129,15 @@ class SubscribeDownloadAttr(_PluginBase):
             "props": {
                 "type": "info",
                 "variant": "tonal",
+                "class": "mb-3",
                 "title": "目录规则优先级",
                 "text": (
-                    "目录行按宿主的目录优先级（priority）升序排列，数值小者优先，相同优先级保持宿主配置顺序；"
-                    "同一下载目录对应同一个目录匹配标识，标识由系统自动生成，"
-                    "只需在各目录的分类/标签输入框中配置，无需修改匹配标识。"
-                    "匹配顺序：目录规则 > 默认规则；同一目录只采用首条生效的目录规则。"
+                    "目录行按宿主的目录优先级（priority）升序排列，数值小者优先。\n"
+                    "相同优先级保持宿主配置顺序。\n"
+                    "同一下载目录对应同一个目录匹配标识，标识由系统自动生成。\n"
+                    "只需在各目录的分类/标签输入框中配置，无需修改匹配标识。\n"
+                    "匹配顺序：目录规则 > 默认规则。\n"
+                    "同一目录只采用首条生效的目录规则。"
                 ),
             },
         }
@@ -1167,14 +1174,16 @@ class SubscribeDownloadAttr(_PluginBase):
         keys = self._directory_keys
         alerts: list[dict[str, Any]] = []
         for conflict in (keys or {}).get("conflicts") or ():
+            conflict_text = self._form_conflict_text(conflict)
             alerts.append(
                 {
                     "component": "VAlert",
                     "props": {
                         "type": "warning",
                         "variant": "tonal",
+                        "class": "mb-3",
                         "title": "目录规则冲突",
-                        "text": self._form_conflict_text(conflict),
+                        "text": conflict_text,
                     },
                 }
             )
@@ -1370,22 +1379,53 @@ class SubscribeDownloadAttr(_PluginBase):
 
         Returns:
             可 ``json.dumps`` 的 Vuetify JSON：无记录时为一个 ``VAlert`` 空态，有记录时为
-            单个「最近处理记录」说明块（含状态图例）、状态分布 ``VChip`` 行与只读
-            ``VDataTable``。
+            单个「最近处理记录」说明块、状态分布 ``VChip`` 行、逐条摘要与只读 ``VDataTable``。
 
         """
         return self._page_record_section()
 
     def _page_record_section(self) -> list[dict[str, Any]]:
-        """返回处理记录区块：概述与状态图例合并为单块说明, 无记录时收缩为空态."""
+        """返回说明、状态分布、逐条摘要与只读表格, 无记录时收缩为空态."""
         records = self._page_records()
         if not records:
             return [self._page_empty_alert()]
         return [
             self._page_overview_alert(len(records)),
             self._page_status_chips(records),
+            self._page_summaries(records),
             self._page_table(records),
         ]
+
+    @staticmethod
+    def _record_summary(record: Mapping[str, Any]) -> str:
+        """把一条处理记录转成按状态区分的人类可读摘要."""
+        item = SubscribeDownloadAttr._page_item(record)
+        title = item["title"]
+        category = item["category"]
+        tags = "、".join(item["tags"])
+        status = item["status"]
+        reason = item["reason"]
+        if status in {WriterStatus.OK.value, STATUS_DRY_RUN}:
+            attributes = []
+            if category:
+                attributes.append(f"分类「{category}」")
+            if tags:
+                attributes.append(f"标签「{tags}」")
+            if status == WriterStatus.OK.value:
+                if not attributes:
+                    return f"《{title}》已处理"
+                return f"《{title}》注入了{'、'.join(attributes)}"
+            suffix = "（未调用下载器）"
+            if not attributes:
+                return f"《{title}》拟写入{suffix}"
+            return f"《{title}》拟写入{'、'.join(attributes)}{suffix}"
+        if status == WriterStatus.FAILED.value:
+            return f"《{title}》写入失败：{reason}"
+        if status == WriterStatus.UNSUPPORTED.value:
+            return f"《{title}》部分写入：{reason}"
+        if status == WriterStatus.SKIPPED.value:
+            return f"《{title}》未写入：{reason}"
+        return f"《{title}》：{reason}"
 
     def _page_records(self) -> list[dict[str, Any]]:
         """读取处理记录并转成最近优先的 JSON 安全拷贝, 持久化顺序与内容不变."""
@@ -1431,23 +1471,17 @@ class SubscribeDownloadAttr(_PluginBase):
 
     @staticmethod
     def _page_overview_alert(total: int) -> dict[str, Any]:
-        """返回记录区唯一的说明块：概述、只读语义与五种状态图例合并成两行文本.
+        """返回记录区唯一的说明块, 只描述倒序范围与只读语义.
 
-        图例只以 ``状态=标签`` 形式列出，不再逐项展开 ``hint`` 含义；``dry_run`` 与
-        ``unsupported`` 继续由标签标注为非成功，不单独一张卡说明。
+        状态含义由下方带颜色标签直接展示，说明块不另外罗列 ``状态=标签``。
         """
-        lines = [
-            f"倒序展示最近 7 天内、最多 {MAX_RECORDS} 条；记录区只读。",
-            "状态图例："
-            + "；".join(f"{status}={PAGE_STATUS_DISPLAY[status]['label']}" for status in PAGE_STATUS_ORDER),
-        ]
         return {
             "component": "VAlert",
             "props": {
                 "type": "info",
                 "variant": "tonal",
                 "title": f"最近处理记录（最近在前，共 {total} 条）",
-                "text": "\n".join(lines),
+                "text": f"倒序展示最近 7 天内、最多 {MAX_RECORDS} 条；记录区只读。",
             },
         }
 
@@ -1477,7 +1511,43 @@ class SubscribeDownloadAttr(_PluginBase):
             )
         return {
             "component": "VRow",
+            "props": {"class": "mt-2"},
             "content": [{"component": "VCol", "props": {"cols": 12}, "content": chips}],
+        }
+
+    @staticmethod
+    def _page_summaries(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        """返回逐条处理明细列表, 标题与摘要正文分离且复用统一摘要文案."""
+        items = []
+        for record in records:
+            title = f"《{_text(record.get('title'))}》"
+            summary = SubscribeDownloadAttr._record_summary(record)
+            subtitle = summary.removeprefix(title).removeprefix("：")
+            items.append(
+                {
+                    "component": "VListItem",
+                    "props": {"title": title, "subtitle": subtitle},
+                }
+            )
+        return {
+            "component": "VRow",
+            "props": {"class": "mt-2"},
+            "content": [
+                {
+                    "component": "VCol",
+                    "props": {"cols": 12},
+                    "content": [
+                        {
+                            "component": "VList",
+                            "props": {"density": "compact", "class": "py-0"},
+                            "content": [
+                                {"component": "VListSubheader", "text": "处理明细"},
+                                *items,
+                            ],
+                        }
+                    ],
+                }
+            ],
         }
 
     @staticmethod
@@ -1492,6 +1562,7 @@ class SubscribeDownloadAttr(_PluginBase):
                 "hide-default-footer": True,
                 "items-per-page": -1,
                 "no-data-text": "暂无处理记录",
+                "class": "mt-2 pb-16",
             },
         }
 

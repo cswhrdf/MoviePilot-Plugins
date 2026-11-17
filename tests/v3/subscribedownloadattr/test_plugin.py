@@ -19,6 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from app.schemas.system import TransferDirectoryConf
 from app.schemas.types import EventType, MediaType, SystemConfigKey
 from app.sdk.events import Event
@@ -131,7 +132,7 @@ def _form_models(form: Any) -> list[str]:
 
 
 def _form_text(form: Any) -> str:
-    """汇总表单所有可读文本（节点 text 与 props 的 text/title/hint/label）."""
+    """汇总节点 text 与 props 的 text/title/subtitle/hint/label 可读文本."""
     parts: list[str] = []
     for node in _walk_form(form):
         node_text = node.get("text")
@@ -140,7 +141,7 @@ def _form_text(form: Any) -> str:
         props = node.get("props")
         if not isinstance(props, dict):
             continue
-        for key in ("text", "title", "hint", "label"):
+        for key in ("text", "title", "subtitle", "hint", "label"):
             value = props.get(key)
             if isinstance(value, str):
                 parts.append(value)
@@ -2019,6 +2020,87 @@ def _page_alert_titles(page: Any) -> list[str]:
     return [str(alert.get("title", "")) for alert in _page_alerts(page)]
 
 
+@pytest.mark.parametrize(
+    ("record", "expected"),
+    [
+        (
+            {"title": "动漫示例", "category": "动漫", "tags": ["BT", "日番"], "status": "ok"},
+            "《动漫示例》注入了分类「动漫」、标签「BT、日番」",
+        ),
+        (
+            {"title": "仅分类", "category": "电视剧", "tags": [], "status": "ok"},
+            "《仅分类》注入了分类「电视剧」",
+        ),
+        (
+            {"title": "仅标签", "category": "", "tags": ["tv", "h1"], "status": "ok"},
+            "《仅标签》注入了标签「tv、h1」",
+        ),
+        ({"title": "无属性", "category": "", "tags": [], "status": "ok"}, "《无属性》已处理"),
+        (
+            {"title": "预演", "category": "动漫", "tags": ["BT", "日番"], "status": "dry_run"},
+            "《预演》拟写入分类「动漫」、标签「BT、日番」（未调用下载器）",
+        ),
+        (
+            {"title": "预演分类", "category": "动漫", "tags": [], "status": "dry_run"},
+            "《预演分类》拟写入分类「动漫」（未调用下载器）",
+        ),
+        (
+            {"title": "预演标签", "category": "", "tags": ["BT"], "status": "dry_run"},
+            "《预演标签》拟写入标签「BT」（未调用下载器）",
+        ),
+        (
+            {"title": "预演空", "category": "", "tags": [], "status": "dry_run"},
+            "《预演空》拟写入（未调用下载器）",
+        ),
+        (
+            {"title": "失败示例", "status": "failed", "reason": "连接超时"},
+            "《失败示例》写入失败：连接超时",
+        ),
+        (
+            {"title": "部分示例", "status": "unsupported", "reason": "不支持分类"},
+            "《部分示例》部分写入：不支持分类",
+        ),
+        (
+            {"title": "跳过示例", "status": "skipped", "reason": "未命中规则"},
+            "《跳过示例》未写入：未命中规则",
+        ),
+        (
+            {"title": "未知示例", "status": "other", "reason": "状态待确认"},
+            "《未知示例》：状态待确认",
+        ),
+    ],
+)
+def test_record_summary_covers_statuses_and_empty_attributes(record, expected):
+    """摘要纯函数覆盖全部状态、空分类与空标签省略规则."""
+    summary = _load_plugin().SubscribeDownloadAttr._record_summary(record)
+
+    assert summary == expected
+
+
+def test_get_page_record_summaries(monkeypatch):
+    """详情页在状态与表格之间展示逐条摘要, 新区块保持只读与 JSON 安全."""
+    module, plugin, _, _ = _prepare(monkeypatch)
+    store = _bind_store(plugin)
+    store.data[module.RECORDS_KEY] = [_page_record("h1", "ok"), _page_record("h2", "failed")]
+
+    page = plugin.get_page()
+
+    summary_lists = _form_components(page, "VList")
+    assert len(summary_lists) == 1
+    assert page[2]["component"] == "VRow"
+    assert _form_components(page[2], "VList") == summary_lists
+    assert page[3]["component"] == "VDataTable"
+    items = _form_components(summary_lists[0], "VListItem")
+    assert [item["props"]["title"] for item in items] == ["《标题-h2》", "《标题-h1》"]
+    assert items[0]["props"]["subtitle"] == "写入失败：原因-h2"
+    assert items[1]["props"]["subtitle"] == "注入了分类「电视剧」、标签「tv、h1」"
+    assert "处理明细" in _form_text(summary_lists[0])
+    assert "注入了分类「电视剧」、标签「tv、h1」" in _form_text(summary_lists[0])
+    assert _form_models(page) == []
+    assert _page_events(page) == []
+    assert json.loads(json.dumps(page)) == page
+
+
 def test_get_page_table_matches_record_fields(monkeypatch):
     """有记录时返回只读 VDataTable：九列表头与记录字段精确对应, items 最近优先且可序列化."""
     module, plugin, _, _ = _prepare(monkeypatch)
@@ -2086,14 +2168,11 @@ def test_get_page_status_display_covers_all_five(monkeypatch):
     store.data[module.RECORDS_KEY] = [_page_record(status, status) for status in expected]
     page = plugin.get_page()
 
-    # 图例与概述合并进唯一的记录说明块, 逐项标明原始状态值与显示标签
+    # 说明块只陈述倒序范围与只读语义, 状态由带颜色标签展示
     record_alerts = [alert for alert in _page_alerts(page) if alert["title"].startswith("最近处理记录")]
     assert len(record_alerts) == 1
     record_text = record_alerts[0]["text"]
     assert "最近 7 天内" in record_text
-    assert "状态图例" in record_text
-    for status in expected:
-        assert f"{status}={display[status]['label']}" in record_text
     assert "记录状态说明" not in _page_alert_titles(page)
 
     chips = _form_components(page, "VChip")
