@@ -735,6 +735,7 @@ def test_form_shows_stale_and_conflict_notes(monkeypatch):
     assert "数值小者优先" in page_text
     assert "只需在各目录的分类/标签输入框中配置，无需修改匹配标识" in page_text
     assert "匹配顺序：目录规则 > 默认规则" in page_text
+    assert "目录列表来自系统目录配置，修改系统目录后需在本页保存后刷新" in page_text
 
     # 冲突提示不泄露内部键/优先级/序号等实现细节
     conflict_nodes = [node for node in _form_components(form, "VAlert") if node["props"].get("title") == "目录规则冲突"]

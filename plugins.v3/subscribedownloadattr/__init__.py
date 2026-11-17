@@ -1038,7 +1038,7 @@ class SubscribeDownloadAttr(_PluginBase):
                     "props": {
                         "type": "warning",
                         "variant": "tonal",
-                        "class": "mb-4",
+                        "class": "mb-4 text-pre-line",
                         "title": title,
                         "text": "\n".join(str(issue) for issue in issues),
                     },
@@ -1129,7 +1129,7 @@ class SubscribeDownloadAttr(_PluginBase):
             "props": {
                 "type": "info",
                 "variant": "tonal",
-                "class": "mb-3",
+                "class": "mb-3 text-pre-line",
                 "title": "目录规则优先级",
                 "text": (
                     "目录行按宿主的目录优先级（priority）升序排列，数值小者优先。\n"
@@ -1137,7 +1137,8 @@ class SubscribeDownloadAttr(_PluginBase):
                     "同一下载目录对应同一个目录匹配标识，标识由系统自动生成。\n"
                     "只需在各目录的分类/标签输入框中配置，无需修改匹配标识。\n"
                     "匹配顺序：目录规则 > 默认规则。\n"
-                    "同一目录只采用首条生效的目录规则。"
+                    "同一目录只采用首条生效的目录规则。\n"
+                    "目录列表来自系统目录配置，修改系统目录后需在本页保存后刷新。"
                 ),
             },
         }
@@ -1195,6 +1196,7 @@ class SubscribeDownloadAttr(_PluginBase):
                     "props": {
                         "type": "warning",
                         "variant": "tonal",
+                        "class": "text-pre-line",
                         "title": f"已失效目录键（{len(stale)} 个）",
                         "text": "\n".join(
                             f"{key} → 已失效：当前宿主目录配置中不存在该键，对应规则不会命中" for key in stale
