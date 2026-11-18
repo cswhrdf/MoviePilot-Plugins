@@ -2,21 +2,24 @@
 
 订阅触发自动下载时，按订阅目录规则为下载任务写入下载器的分类与标签。
 
-已实现 ``EventType.DownloadAdded`` 事件处理：开关与来源过滤、媒体守卫、目录解析与
-保存路径二次确认、规则命中、``dry_run`` 分流、能力探测式写入与异常隔离；同时包含
-纯逻辑规则层（``rules.py``）、宿主只读适配、下载器写入适配（``writer.py``）、
+已实现 ``EventType.DownloadAdded`` 事件处理：开关与来源过滤、媒体守卫、订阅保存路径
+重定位与按媒体匹配回退、规则命中、``dry_run`` 分流、能力探测式写入与异常隔离；同时
+包含纯逻辑规则层（``rules.py``）、宿主只读适配、下载器写入适配（``writer.py``）、
 处理记录与 7 天去重表的插件数据持久化、按宿主实时目录生成的配置页，以及只读处理
 记录的详情页。
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from enum import Enum
 from typing import Any
 
+# 例外依赖（已评审接受，不在 app.sdk 稳定面）：目录匹配与订阅自身的只读保存路径
 from app.application.directory import DirectoryHelper
+from app.db.oper.subscribe import SubscribeOper
 from app.schemas.system import TransferDirectoryConf
 from app.schemas.types import EventType, SystemConfigKey
 from app.sdk.config import settings
@@ -478,7 +481,8 @@ class SubscribeDownloadAttr(_PluginBase):
         logger.info(f"[{self.plugin_name}] 处理下载任务：hash={hash_value}，标题={title}")
 
         self._warn_directory_conflicts()
-        entry, reason = self._resolve_event_directory(media_info, context)
+        source = payload.get("source") if isinstance(payload, Mapping) else None
+        entry, reason = self._resolve_event_directory(media_info, context, source)
         if entry is None:
             logger.debug(f"[{self.plugin_name}] 目录未命中：{reason or '未找到可用的下载目录'}")
             self._record_skip(
@@ -789,51 +793,117 @@ class SubscribeDownloadAttr(_PluginBase):
                     break
         return list(value or [])
 
-    def _resolve_event_directory(self, media_info: Any, context: Any) -> tuple[dict[str, Any] | None, str]:
-        """解析事件对应的目录条目, 并在可读 save_path 时做二次确认.
+    def _resolve_event_directory(
+        self,
+        media_info: Any,
+        context: Any,
+        source: Any,
+    ) -> tuple[dict[str, Any] | None, str]:
+        """解析事件对应的目录条目, 订阅保存路径优先, 其余按媒体匹配回退.
 
         守卫在前：媒体缺失或 ``type`` 为空时直接返回 None，不调用宿主目录解析。
+        订阅来源先用订阅自身的 ``save_path`` 做最长前缀重定位: 命中后即使失败也不再
+        回退 ``get_download_dir``, 避免把订阅目录与同等优先级的其它目录混为一谈。
         """
         if self._media_snapshot(media_info) is None:
             return None, "媒体信息缺失或类型为空，跳过目录解析与写入"
+        sub_path = self._subscription_save_path(source)
+        if sub_path:
+            return self._resolve_event_directory_by_task_path(media_info, sub_path)
+        entry, reason = self._resolve_event_directory_by_media(media_info)
+        if entry is None:
+            return None, reason
+        # 非订阅来源没有权威落点: 多个目录等价时无法判断真实保存路径, 跳过而不是猜
+        if not _text(source).startswith(SUBSCRIPTION_SOURCE_PREFIX) and self._media_matches_multiple(media_info):
+            return None, "非订阅来源且媒体匹配多个下载目录，缺少可靠保存路径，已跳过"
+        return entry, ""
+
+    def _resolve_event_directory_by_task_path(
+        self,
+        media_info: Any,
+        task_path: str,
+    ) -> tuple[dict[str, Any] | None, str]:
+        """按订阅保存路径做最长前缀重定位, 命中后不再回退按媒体匹配."""
+        try:
+            relocated = DirectoryHelper().get_download_dir_by_task_path(media_info, task_path)
+        except Exception as err:  # 宿主最长前缀匹配异常只降级为跳过
+            return None, f"订阅保存路径重定位失败：{err}"
+        if relocated is None:
+            return None, f"订阅保存路径 {task_path} 未匹配到任何下载目录，已跳过"
+        return self._effective_event_entry(
+            relocated,
+            missing_reason="订阅保存路径命中的目录不在当前目录配置中",
+            ineffective_reason="订阅保存路径命中的目录键 {key} 是重复键中的非生效项",
+        )
+
+    def _resolve_event_directory_by_media(self, media_info: Any) -> tuple[dict[str, Any] | None, str]:
+        """按宿主媒体匹配取首个目录, 与订阅保存路径缺失时的回退语义一致."""
         try:
             matched = DirectoryHelper().get_download_dir(media_info)
         except Exception as err:  # 宿主匹配异常只降级为跳过
             return None, f"宿主目录匹配失败：{err}"
         if matched is None:
             return None, "宿主未匹配到下载目录"
-        entry = self._find_event_directory_entry(matched)
-        if entry is None:
-            return None, "宿主命中的下载目录不在当前目录配置中"
-        if not entry["effective"]:
-            return None, f"目录键 {entry['key']} 命中重复键中的非生效项，已跳过"
-        return self._confirm_event_directory(entry, media_info, context)
+        return self._effective_event_entry(
+            matched,
+            missing_reason="宿主命中的下载目录不在当前目录配置中",
+            ineffective_reason="目录键 {key} 命中重复键中的非生效项，已跳过",
+        )
 
-    def _confirm_event_directory(
+    def _effective_event_entry(
         self,
-        entry: dict[str, Any],
-        media_info: Any,
-        context: Any,
+        directory: Any,
+        *,
+        missing_reason: str,
+        ineffective_reason: str,
     ) -> tuple[dict[str, Any] | None, str]:
-        """保存路径可读时用宿主 ``get_download_dir_by_save_path`` 二次确认目录.
+        """把宿主返回的目录对象定位成生效条目, 未命中或非生效项按调用方措辞跳过."""
+        entry = self._find_event_directory_entry(directory)
+        if entry is None:
+            return None, missing_reason
+        if not entry["effective"]:
+            return None, ineffective_reason.format(key=entry["key"])
+        return entry, ""
 
-        保存路径只读 ``context`` 顶层 ``save_path``，不猜嵌套字段、不额外访问下载器。
-        """
-        save_path = self._context_save_path(context)
-        if not save_path:
-            return entry, ""
+    @staticmethod
+    def _subscription_id_from_source(source: Any) -> int | None:
+        """从 ``Subscribe|{json}`` 来源中解析订阅 ID, 非订阅来源或解析失败返回 None."""
+        text = _text(source)
+        if not text.startswith(SUBSCRIPTION_SOURCE_PREFIX):
+            return None
         try:
-            confirmed = DirectoryHelper().get_download_dir_by_save_path(media_info, save_path)
-        except Exception as err:
-            return None, f"保存路径二次确认失败：{err}"
-        if confirmed is None:
-            return None, f"保存路径 {save_path} 与下载目录配置不一致，已跳过"
-        confirmed_entry = self._find_event_directory_entry(confirmed)
-        if confirmed_entry is None:
-            return None, f"保存路径 {save_path} 命中的目录不在当前目录配置中"
-        if not confirmed_entry["effective"]:
-            return None, f"保存路径命中的目录键 {confirmed_entry['key']} 是重复键中的非生效项"
-        return confirmed_entry, ""
+            payload = json.loads(text[len(SUBSCRIPTION_SOURCE_PREFIX) :])
+        except ValueError:
+            return None
+        if not isinstance(payload, Mapping):
+            return None
+        value = payload.get("id")
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            return None
+        try:
+            return int(value)
+        except ValueError:
+            return None
+
+    def _subscription_save_path(self, source: Any) -> str:
+        """只读订阅自身的保存路径, 订阅不存在或读取失败时返回空串并按媒体回退."""
+        sid = self._subscription_id_from_source(source)
+        if sid is None:
+            return ""
+        try:
+            subscribe = SubscribeOper().get(sid)
+        except Exception as err:  # 订阅读取失败不打断事件处理, 降级为按媒体匹配
+            logger.warning(f"[{self.plugin_name}] 读取订阅 {sid} 的保存路径失败，回退按媒体匹配目录：{err}")
+            return ""
+        if subscribe is None:
+            return ""
+        return _text(getattr(subscribe, "save_path", None))
+
+    def _media_matches_multiple(self, media_info: Any) -> bool:
+        """判断媒体是否同时匹配多个下载目录, 匹配数不超过 1 时不算歧义."""
+        helper = DirectoryHelper()
+        directories = helper.get_download_dirs()
+        return sum(1 for directory in directories if helper.matches_media(directory, media_info)) > 1
 
     def _find_event_directory_entry(self, directory: Any) -> dict[str, Any] | None:
         """按宿主命中的目录对象定位条目, 同名重复键时优先精确匹配目录名."""
@@ -869,12 +939,6 @@ class SubscribeDownloadAttr(_PluginBase):
         if isinstance(context, Mapping):
             return context.get(name)
         return getattr(context, name, None)
-
-    @classmethod
-    def _context_save_path(cls, context: Any) -> str:
-        """保守读取 ``context.save_path`` 顶层字段, 不猜嵌套结构."""
-        value = cls._context_value(context, "save_path")
-        return _text(value)
 
     def _config_snapshot(self) -> dict[str, Any]:
         """返回当前规范化配置, 未初始化时按默认配置运行."""

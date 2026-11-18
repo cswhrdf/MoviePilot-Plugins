@@ -26,7 +26,8 @@
 - 分类仅 qBittorrent：其它下载器不写分类，避免误改；此时结果可能是 `unsupported`（部分不支持，非成功）。
 - 空分类不写：规则里分类为空时不调用分类写入，避免把任务分类清空。
 - 空媒体跳过：事件缺少媒体信息或媒体类型为空时直接跳过，不调用宿主目录匹配（宿主对空媒体会返回首个目录）。
-- 保存路径二次确认：事件 `context.save_path` 可读时用宿主按保存路径复核目录，与目录配置不一致则跳过。
+- 目录判定：订阅来源优先读取订阅自身的保存路径，用宿主 `get_download_dir_by_task_path` 做最长前缀重定位；拿不到保存路径时按媒体匹配回退 `get_download_dir`；非订阅来源且媒体同时匹配多个下载目录、又没有可靠保存路径时跳过，不猜目录。
+- 订阅保存路径异常降级：读不到订阅或订阅没有保存路径时按媒体匹配回退；订阅保存路径命中的最深层目录落在当前目录配置之外时跳过，不对齐到其它目录。
 - 7 天去重：同一任务 hash 在 7 天内只处理一次；`failed` 不登记去重，可重试；`dry_run` 会登记去重。
 - `dry_run`：只记录拟写入的分类与标签，不调用下载器，状态为 `dry_run` 并显式标注非成功。
 - 与 `downloadsitetag` 类插件共存：本插件只追加标签、只覆盖分类；其它插件写入的标签不会被删除，但分类字段以最后写入者为准，建议避免多个插件同时写分类。
@@ -83,9 +84,10 @@
 
 ## 宿主依赖与版本下界
 
-- 要求 MoviePilot `>=3.2.0`：该版本的 `DownloadAdded` 事件才提供当前形态的 `hash` 与 `context`（含 `media_info`、`save_path`），`app.sdk.services` 导出与系统标签配置键也稳定，低版本字段与导出不稳定。
+- 要求 MoviePilot `>=3.2.0`：该版本的 `DownloadAdded` 事件才提供当前形态的 `hash` 与 `context`（含 `media_info`，不含 `save_path`），`app.sdk.services` 导出与系统标签配置键也稳定，低版本字段与导出不稳定。
+- 索引条目的 `system_version` 继续锁定 `>=3.2.0`：本插件依赖的 `get_download_dir_by_task_path` 与 `SubscribeOper.get` 在该版本均已提供，升级依赖后不放宽也不提高版本门禁。
 - 宿主接口优先使用稳定面：`app.sdk.plugin`、`app.sdk.config`、`app.sdk.logging`、`app.sdk.events`、`app.sdk.services`。
-- 例外依赖（已评审接受，不在 `app.sdk` 稳定面）：`app.application.directory.DirectoryHelper`（目录匹配与按保存路径复核）、`app.chain.download.DownloadChain`（下载器实例不可用时的回退写入通道）、`app.schemas.system.TransferDirectoryConf` 与 `app.schemas.types` 的数据结构和枚举。
+- 例外依赖（已评审接受，不在 `app.sdk` 稳定面）：`app.application.directory.DirectoryHelper`（目录匹配与按保存路径重定位）、`app.db.oper.subscribe.SubscribeOper`（只读订阅自身的 `save_path`）、`app.chain.download.DownloadChain`（下载器实例不可用时的回退写入通道）、`app.schemas.system.TransferDirectoryConf` 与 `app.schemas.types` 的数据结构和枚举。
 
 ---
 

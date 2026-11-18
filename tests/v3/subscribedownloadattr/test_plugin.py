@@ -35,6 +35,7 @@ ABSTRACT_METHODS = {"init_plugin", "get_state", "get_api", "get_form", "get_page
 LEGACY_MODULE_PREFIXES = ("app.core.", "app.helper.", "app.utils.", "app.sdk._legacy")
 ALLOWED_APP_IMPORTS = {
     "app.application.directory",
+    "app.db.oper.subscribe",
     "app.schemas.system",
     "app.schemas.types",
     "app.sdk.config",
@@ -907,30 +908,66 @@ class _FakeLogger:
 
 
 class _FakeDirectoryHelper:
-    """伪宿主 DirectoryHelper: 记录目录匹配与保存路径确认的调用与返回."""
+    """伪宿主 DirectoryHelper: 记录目录匹配、任务路径重定位与目录列表的调用与返回."""
 
     calls: list[Any] = []
     result: Any = None
-    save_path_calls: list[tuple[Any, str]] = []
-    save_path_result: Any = None
+    task_path_calls: list[tuple[Any, str]] = []
+    task_path_result: Any = None
+    download_dirs: list[Any] = []
 
     @classmethod
-    def reset(cls, result: Any = None, save_path_result: Any = None) -> None:
-        """清空调用记录并设置下一次目录匹配与保存路径确认的返回值."""
+    def reset(cls, result: Any = None, task_path_result: Any = None, download_dirs: Any = None) -> None:
+        """清空调用记录并设置下一次目录匹配、任务路径重定位与目录列表的返回值."""
         cls.calls = []
         cls.result = result
-        cls.save_path_calls = []
-        cls.save_path_result = save_path_result
+        cls.task_path_calls = []
+        cls.task_path_result = task_path_result
+        cls.download_dirs = [] if download_dirs is None else list(download_dirs)
 
     def get_download_dir(self, media: Any) -> Any:
         """记录被查询的媒体并返回预设目录."""
         type(self).calls.append(media)
         return type(self).result
 
-    def get_download_dir_by_save_path(self, media: Any, save_path: str) -> Any:
-        """记录二次确认的入参顺序并返回预设目录."""
-        type(self).save_path_calls.append((media, save_path))
-        return type(self).save_path_result
+    def get_download_dir_by_task_path(self, media: Any, task_path: str) -> Any:
+        """记录保存路径重定位的入参顺序并返回预设目录."""
+        type(self).task_path_calls.append((media, task_path))
+        return type(self).task_path_result
+
+    def get_download_dirs(self) -> list[Any]:
+        """返回预设的下载目录列表."""
+        return list(type(self).download_dirs)
+
+    def matches_media(self, directory: Any, media: Any) -> bool:
+        """只用于统计媒体匹配目录数量, 预设目录一律视为匹配."""
+        return True
+
+
+class _FakeSubscribeOper:
+    """伪宿主 SubscribeOper: 只实现只读 get, 记录查询并按预设返回订阅对象."""
+
+    get_calls: list[int] = []
+    save_paths: dict[int, str] = {}
+    error: Exception | None = None
+
+    @classmethod
+    def reset(cls, save_paths: Any = None, error: Exception | None = None) -> None:
+        """清空查询记录并设置下一次订阅保存路径与查询异常."""
+        cls.get_calls = []
+        cls.save_paths = {} if save_paths is None else dict(save_paths)
+        cls.error = error
+
+    def get(self, sid: int) -> Any:
+        """记录订阅 ID 并返回带 save_path 的订阅对象, 不存在时返回 None."""
+        type(self).get_calls.append(sid)
+        error = type(self).error
+        if error is not None:
+            raise error
+        path = type(self).save_paths.get(sid)
+        if path is None:
+            return None
+        return SimpleNamespace(save_path=path)
 
 
 class _Media:
@@ -960,7 +997,9 @@ def _prepare(
     monkeypatch.setattr(module, "logger", fake_logger)
     monkeypatch.setattr(module, "settings", SimpleNamespace(TORRENT_TAG=tag))
     monkeypatch.setattr(module, "DirectoryHelper", _FakeDirectoryHelper)
+    monkeypatch.setattr(module, "SubscribeOper", _FakeSubscribeOper)
     _FakeDirectoryHelper.reset()
+    _FakeSubscribeOper.reset()
 
     plugin = object.__new__(module.SubscribeDownloadAttr)
     value = [] if directories is _UNSET else directories
@@ -1423,15 +1462,12 @@ def _event(
     media: Any = _UNSET,
     source: Any = 'Subscribe|{"id": 1, "name": "示例订阅"}',
     downloader: Any = "qbittorrent",
-    save_path: Any = _UNSET,
     context: Any = _UNSET,
 ) -> Event:
-    """构造 DownloadAdded 事件 payload."""
+    """构造 DownloadAdded 事件 payload（context 按宿主实际形态不含 save_path）."""
     if context is _UNSET:
         media_value = _Media(MediaType.TV, "国产剧", "示例剧", "2024") if media is _UNSET else media
         context = SimpleNamespace(media_info=media_value)
-        if save_path is not _UNSET:
-            context.save_path = save_path
     return Event(
         EventType.DownloadAdded,
         {"hash": hash_value, "context": context, "downloader": downloader, "source": source},
@@ -1876,59 +1912,165 @@ def test_exception_fallback_does_not_recurse(monkeypatch):
     assert store.save_calls == []
 
 
-# ---------------- DownloadAdded 事件处理：保存路径与重复键 ----------------
+# ---------------- DownloadAdded 事件处理：订阅保存路径重定位与重复键 ----------------
+
+_TWO_DIRECTORY_RULES = {
+    "/mnt/media:/tv": {"category": "电视剧", "tags": ["tv"]},
+    "/mnt/media:/movie": {"category": "电影", "tags": ["movie"]},
+}
 
 
-def test_save_path_second_confirmation(monkeypatch):
-    """可读 save_path 时按 (media, save_path) 二次确认; 不一致不写, 无路径不额外读."""
-    directories = [
-        _directory("电视剧", "/mnt/media", "/tv", 0),
-        _directory("电影", "/mnt/media", "/movie", 1),
-    ]
-    rules = {
-        "/mnt/media:/tv": {"category": "电视剧", "tags": ["tv"]},
-        "/mnt/media:/movie": {"category": "电影", "tags": ["movie"]},
-    }
-    module, plugin, _, _ = _prepare_event(
-        monkeypatch,
-        config=_hit_config(directory_rules=rules),
+def _prepare_two_directories(monkeypatch: Any) -> tuple[Any, Any, _FakeStore]:
+    """构造含电视剧与电影两条目录的插件实例, 并把持久化替换为伪存储."""
+    module, plugin, _, _ = _prepare_event(monkeypatch, config=_hit_config(directory_rules=_TWO_DIRECTORY_RULES))
+    plugin.systemconfig = _FakeSystemConfig(
+        [
+            _directory("电视剧", "/mnt/media", "/tv", 0),
+            _directory("电影", "/mnt/media", "/movie", 1),
+        ]
     )
-    # 重新初始化以使用两条目录
-    plugin.systemconfig = _FakeSystemConfig(directories)
-    plugin.init_plugin(_hit_config(directory_rules=rules))
+    plugin.init_plugin(_hit_config(directory_rules=_TWO_DIRECTORY_RULES))
     store = _bind_store(plugin)
+    return module, plugin, store
+
+
+def test_subscription_save_path_relocates_directory(monkeypatch):
+    """订阅保存路径最长前缀命中电影目录时按电影写入, 且不再调用 get_download_dir."""
+    module, plugin, store = _prepare_two_directories(monkeypatch)
     writer = _FakeWriter()
     _install_writer(module, monkeypatch, writer)
-
     media = _Media(MediaType.TV, "国产剧", "示例剧", "2024")
-    context = SimpleNamespace(media_info=media, save_path="/downloads/tv")
+    movie = TransferDirectoryConf(name="电影", storage="/mnt/media", download_path="/movie", priority=1)
+    _FakeDirectoryHelper.reset(result=_tv_directory(), task_path_result=movie)
+    _FakeSubscribeOper.reset({1: "/downloads/movie/某片"})
 
-    # 保存路径确认失败: 不写, 记录 skipped
-    _FakeDirectoryHelper.reset(result=_tv_directory(), save_path_result=None)
-    plugin.on_download_added(_event("mismatch", context=context))
-    assert _FakeDirectoryHelper.save_path_calls == [(media, "/downloads/tv")]
-    assert writer.tag_calls == []
-    assert _records(store)[-1]["status"] == "skipped"
-    assert "不一致" in _records(store)[-1]["reason"]
+    plugin.on_download_added(_event("relocated", media=media, source='Subscribe|{"id": 1, "name": "示例订阅"}'))
 
-    # 保存路径确认到电影目录: 使用确认后的目录键
-    confirmed = TransferDirectoryConf(name="电影", storage="/mnt/media", download_path="/movie", priority=1)
-    _FakeDirectoryHelper.reset(result=_tv_directory(), save_path_result=confirmed)
-    plugin.on_download_added(_event("confirmed", context=context))
+    # 宿主按任务保存路径做最长前缀重定位, 入参顺序为 (media, save_path)
+    assert _FakeDirectoryHelper.task_path_calls == [(media, "/downloads/movie/某片")]
+    assert _FakeSubscribeOper.get_calls == [1]
+    # 命中重定位后不再回退 get_download_dir
+    assert _FakeDirectoryHelper.calls == []
     record = _records(store)[-1]
+    assert record["status"] == "ok"
     assert record["directory_key"] == "/mnt/media:/movie"
     assert record["level"] == "directory"
     assert record["category"] == "电影"
     assert record["tags"] == ["movie"]
-    assert writer.category_calls == [("confirmed", "电影")]
+    assert writer.category_calls == [("relocated", "电影")]
 
-    # 无 save_path 时不额外读取, 保留 get_download_dir 结果
-    _FakeDirectoryHelper.reset(result=_tv_directory())
-    plugin.on_download_added(_event("no-path", context=SimpleNamespace(media_info=media)))
-    assert _FakeDirectoryHelper.save_path_calls == []
+
+def test_subscription_save_path_unmatched_skips(monkeypatch):
+    """订阅保存路径未匹配到任何目录时 skipped, 不回退 get_download_dir 也不写入."""
+    module, plugin, store = _prepare_two_directories(monkeypatch)
+    writer = _FakeWriter()
+    writer_calls = _install_writer(module, monkeypatch, writer)
+    media = _Media(MediaType.TV, "国产剧", "示例剧", "2024")
+    _FakeDirectoryHelper.reset(result=_tv_directory(), task_path_result=None)
+    _FakeSubscribeOper.reset({1: "/downloads/unknown/某片"})
+
+    plugin.on_download_added(_event("unmatched", media=media))
+
+    assert _FakeDirectoryHelper.task_path_calls == [(media, "/downloads/unknown/某片")]
+    assert _FakeDirectoryHelper.calls == []
     record = _records(store)[-1]
+    assert record["status"] == "skipped"
+    assert "未匹配到任何下载目录" in record["reason"]
+    assert writer_calls == []
+    assert writer.tag_calls == []
+    assert writer.category_calls == []
+
+
+def test_missing_subscription_save_path_falls_back_to_media(monkeypatch):
+    """订阅没有保存路径时按媒体匹配回退, 目录键仍取 get_download_dir 结果."""
+    module, plugin, _, store = _prepare_event(monkeypatch)
+    writer = _FakeWriter()
+    _install_writer(module, monkeypatch, writer)
+    media = _Media(MediaType.TV, "国产剧", "示例剧", "2024")
+    _FakeDirectoryHelper.reset(result=_tv_directory())
+    _FakeSubscribeOper.reset()
+
+    plugin.on_download_added(_event("fallback", media=media))
+
+    assert _FakeSubscribeOper.get_calls == [1]
+    assert _FakeDirectoryHelper.task_path_calls == []
+    assert _FakeDirectoryHelper.calls == [media]
+    record = _records(store)[-1]
+    assert record["status"] == "ok"
     assert record["directory_key"] == "/mnt/media:/tv"
     assert record["category"] == "电视剧"
+    assert writer.category_calls == [("fallback", "电视剧")]
+
+
+def test_non_subscription_ambiguous_directories_skip(monkeypatch):
+    """非订阅来源在多个目录等价且无可靠保存路径时跳过, 不猜目录也不写入."""
+    module, plugin, _, store = _prepare_event(monkeypatch)
+    writer = _FakeWriter()
+    writer_calls = _install_writer(module, monkeypatch, writer)
+    media = _Media(MediaType.TV, "国产剧", "示例剧", "2024")
+    _FakeDirectoryHelper.reset(
+        result=_tv_directory(),
+        download_dirs=[
+            TransferDirectoryConf(name="电视剧", storage="/mnt/media", download_path="/tv", priority=0),
+            TransferDirectoryConf(name="电影", storage="/mnt/media", download_path="/movie", priority=1),
+        ],
+    )
+    _FakeSubscribeOper.reset()
+
+    plugin.on_download_added(_event("ambiguous", media=media, source="Manual|用户手动下载"))
+
+    assert _FakeDirectoryHelper.calls == [media]
+    record = _records(store)[-1]
+    assert record["status"] == "skipped"
+    assert "缺少可靠保存路径" in record["reason"]
+    assert writer_calls == []
+    assert writer.tag_calls == []
+    assert writer.category_calls == []
+
+
+def test_subscription_lookup_error_falls_back_to_media(monkeypatch):
+    """读取订阅失败时记 warning 并按媒体匹配回退, 不打断事件处理."""
+    module, plugin, fake_logger, store = _prepare_event(monkeypatch)
+    writer = _FakeWriter()
+    _install_writer(module, monkeypatch, writer)
+    media = _Media(MediaType.TV, "国产剧", "示例剧", "2024")
+    _FakeDirectoryHelper.reset(result=_tv_directory())
+    _FakeSubscribeOper.reset(error=RuntimeError("subscribe db down"))
+
+    plugin.on_download_added(_event("oper-error", media=media))
+
+    assert any("读取订阅 1 的保存路径失败" in message for message in fake_logger.warnings)
+    assert _FakeDirectoryHelper.task_path_calls == []
+    assert _FakeDirectoryHelper.calls == [media]
+    record = _records(store)[-1]
+    assert record["status"] == "ok"
+    assert record["directory_key"] == "/mnt/media:/tv"
+
+
+def test_subscription_without_save_path_ignores_ambiguity(monkeypatch):
+    """订阅来源即使没有保存路径也不判歧义: 与宿主实际落点 get_download_dir 首条保持一致."""
+    module, plugin, _, store = _prepare_event(monkeypatch)
+    writer = _FakeWriter()
+    _install_writer(module, monkeypatch, writer)
+    media = _Media(MediaType.TV, "国产剧", "示例剧", "2024")
+    _FakeDirectoryHelper.reset(
+        result=_tv_directory(),
+        download_dirs=[
+            TransferDirectoryConf(name="电视剧", storage="/mnt/media", download_path="/tv", priority=0),
+            TransferDirectoryConf(name="电影", storage="/mnt/media", download_path="/movie", priority=1),
+        ],
+    )
+    _FakeSubscribeOper.reset({1: ""})
+
+    plugin.on_download_added(_event("subscribe-no-path", media=media))
+
+    assert _FakeDirectoryHelper.task_path_calls == []
+    assert _FakeDirectoryHelper.calls == [media]
+    record = _records(store)[-1]
+    assert record["status"] == "ok"
+    assert record["directory_key"] == "/mnt/media:/tv"
+    assert record["category"] == "电视剧"
+    assert writer.category_calls == [("subscribe-no-path", "电视剧")]
 
 
 def test_duplicate_key_effective_false_and_conflict_warning(monkeypatch):
