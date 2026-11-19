@@ -40,7 +40,7 @@
 
 | 配置 | 默认值 | 说明 |
 | --- | --- | --- |
-| `enabled` | `true` | 启用插件；关闭后不处理任何下载事件 |
+| `enabled` | `false` | 启用插件；默认关闭，开启后才会处理下载事件 |
 | `trigger` | `subscribe` | `subscribe` 仅处理来源为 `Subscribe\|` 的下载，`all` 处理全部下载 |
 | `apply_tags` | `true` | 是否写入标签 |
 | `apply_category` | `true` | 是否写入分类 |

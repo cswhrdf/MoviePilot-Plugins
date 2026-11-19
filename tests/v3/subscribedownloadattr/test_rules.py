@@ -13,7 +13,7 @@ from pathlib import Path
 from app.plugins.subscribedownloadattr import rules
 
 DEFAULT_CONFIG = {
-    "enabled": True,
+    "enabled": False,
     "trigger": "subscribe",
     "apply_tags": True,
     "apply_category": True,
@@ -164,7 +164,7 @@ def test_normalize_config_tolerant():
         normalized, issues = rules.normalize_config(bad)
         assert tuple(normalized) == rules.CONFIG_KEYS
         assert "_issues" not in normalized
-        assert normalized["enabled"] is True
+        assert normalized["enabled"] is False
         assert issues and isinstance(issues[0], str)
         assert json.loads(json.dumps(normalized)) == normalized
 
@@ -193,7 +193,7 @@ def test_normalize_config_bool_and_trigger():
     assert "dry_run" in issues[0]
 
     normalized, issues = rules.normalize_config({"enabled": 2, "trigger": "manual"})
-    assert normalized["enabled"] is True
+    assert normalized["enabled"] is False
     assert normalized["trigger"] == "subscribe"
     assert len(issues) == 2
 

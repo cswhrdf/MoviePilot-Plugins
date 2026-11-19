@@ -459,7 +459,7 @@ def normalize_config(config: Any) -> tuple[dict[str, Any], list[str]]:
     if "category_rules" in raw:
         issues.append("配置项 category_rules 已不再使用（目录规则直接读取系统目录），本次已忽略")
     normalized: dict[str, Any] = {
-        "enabled": _bool_field(raw, "enabled", True, issues),
+        "enabled": _bool_field(raw, "enabled", False, issues),
         "trigger": _trigger_field(raw, issues),
         "apply_tags": _bool_field(raw, "apply_tags", True, issues),
         "apply_category": _bool_field(raw, "apply_category", True, issues),

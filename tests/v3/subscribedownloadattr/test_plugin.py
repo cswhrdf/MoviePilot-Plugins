@@ -227,16 +227,19 @@ def test_directory_name_matches_class_name_lower():
 
 
 def test_init_plugin_repeatable():
-    """init_plugin 可重复调用, 默认启用, 且非字典配置按空配置容错."""
+    """init_plugin 可重复调用, 默认停用, 且非字典配置按空配置容错."""
     plugin = _make_plugin()
 
     plugin.init_plugin(None)
-    assert plugin.get_state() is True
+    assert plugin.get_state() is False
     plugin.init_plugin(None)
-    assert plugin.get_state() is True
+    assert plugin.get_state() is False
 
     wrong_config: Any = "enabled=false"
     plugin.init_plugin(wrong_config)
+    assert plugin.get_state() is False
+
+    plugin.init_plugin({"enabled": True})
     assert plugin.get_state() is True
 
 
@@ -245,13 +248,13 @@ def test_init_plugin_normalizes_config():
     plugin = _make_plugin()
 
     plugin.init_plugin({})
-    assert plugin.get_state() is True
+    assert plugin.get_state() is False
     assert plugin._config is not None
     assert tuple(plugin._config) == EXPECTED_CONFIG_KEYS
     assert plugin.config_issues == ()
 
-    plugin.init_plugin({"enabled": False})
-    assert plugin.get_state() is False
+    plugin.init_plugin({"enabled": True})
+    assert plugin.get_state() is True
     assert plugin.config_issues == ()
 
     # 未知键不参与规范化, 也不影响启用状态
@@ -268,7 +271,7 @@ def test_init_plugin_reports_config_issues():
 
     plugin.init_plugin({"dry_run": "not-a-bool", "trigger": "manual"})
 
-    assert plugin.get_state() is True
+    assert plugin.get_state() is False
     assert plugin._config is not None
     assert plugin._config["dry_run"] is False
     assert plugin._config["trigger"] == "subscribe"
@@ -294,7 +297,7 @@ def test_get_state_follows_enabled():
 def test_stop_service_idempotent():
     """stop_service 可重复调用且不抛异常, 停止后状态与配置运行态均被复位."""
     plugin = _make_plugin()
-    plugin.init_plugin({"dry_run": True})
+    plugin.init_plugin({"enabled": True, "dry_run": True})
     assert plugin.get_state() is True
 
     plugin.stop_service()
