@@ -24,5 +24,18 @@
     "history": {
       "0.1.0": "初始版本：监听 DownloadAdded，按订阅目录规则为下载任务写入下载器分类与标签，含 dry_run 预演、7 天去重、处理记录与详情页"
     }
+  },
+  "IncludeAdult": {
+    "name": "include_adult",
+    "description": "",
+    "labels": "",
+    "version": "0.1.0",
+    "icon": "TheMovieDb_A.png",
+    "author": "cswhrdf",
+    "level": 1,
+    "system_version": ">=3.2.0",
+    "history": {
+      "0.1.0": "Initial release: append include_adult=true to TMDB search requests"
+    }
   }
 }
