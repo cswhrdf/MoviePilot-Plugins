@@ -7,6 +7,7 @@
 - 上游是 [jxxghp/MoviePilot-Plugins](https://github.com/jxxghp/MoviePilot-Plugins)；本仓库是裁剪版，只保留自有插件源码与索引，只提交自有插件改动。
 - `docs/` 是上游文档快照，只整体同步，不夹带进插件改动；`docs/Plugin_Development.md` 是唯一完整主指南，`V3_Plugin_Adaptation.md` 只讲迁移，`V2_Plugin_Development.md` 仅供维护历史插件。
 - `plugins/` 为空是正常状态，不要用空目录反推结构缺失，也不要补写占位插件或脚手架。
+- 每个插件的新增或修改都必须开独立新分支进行；写完并自检通过后，只合入**自己仓库**的 `main` 分支；严禁合入或推送到 fork 的上游原仓（`jxxghp/MoviePilot-Plugins`）。
 
 ## 插件改动同步项
 
