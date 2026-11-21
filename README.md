@@ -4,6 +4,10 @@
 
 ## 插件清单
 
+### [共享识别词(个人版)](plugins/remoteidentifiers/README.md)
+
+按配置的免代理地址列表直连拉取远程识别词，未命中走全局代理；支持纯文本词表与 JSON 订阅集合，定时拉取后合并进系统自定义识别词。
+
 ### [转移图片挂载文件](plugins.v3/transferimagesidecar/README.md)
 
 在媒体整理/转移完成后，自动同步处理同目录图片与 NFO 文件；转移到目标目录后，继续检查与媒体文件同名的 poster、fanart 以及 .nfo，并按规则整理到目标位置，减少手动补充海报和艺术图的重复工作。
