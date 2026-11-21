@@ -1,0 +1,63 @@
+name: Sync Upstream Plugin
+
+on:
+  schedule:
+    # 每周一 03:00 UTC
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream-remoteidentifiers
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync remoteidentifiers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Configure upstream remote
+        run: |
+          git remote add upstream https://github.com/jxxghp/MoviePilot-Plugins.git 2>/dev/null || true
+          git fetch upstream main --no-tags
+
+      # pyright 的 PyPI 包在运行时依赖 Node。
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+
+      - name: Install uv
+        run: python -m pip install --upgrade uv
+
+      - name: Install dev dependencies
+        run: uv sync --frozen
+
+      - name: Sync, patch and validate
+        run: uv run --no-sync python scripts/sync_upstream_plugin.py --body-path "$RUNNER_TEMP/pr_body.md"
+
+      - name: Create or update pull request
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: sync/remoteidentifiers
+          delete-branch: false
+          add-paths: |
+            plugins/remoteidentifiers/**
+            package.json
+            icons/**
+            README.md
+          commit-message: "chore: sync upstream remoteidentifiers"
+          title: "chore: sync upstream remoteidentifiers"
+          body-path: ${{ runner.temp }}/pr_body.md
+          labels: |
+            sync
+            automated
